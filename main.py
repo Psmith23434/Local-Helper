@@ -8,6 +8,7 @@ from database import init_db
 import scheduler
 from ui.main_window import MainWindow, apply_dark_palette
 from config import FILES_DIR, TEMPLATES_DIR
+from snipping_tool import register_snip_hotkey
 
 
 def main():
@@ -31,7 +32,15 @@ def main():
     window = MainWindow(layout=GUI_LAYOUT)
     window.show()
 
-    exit_code = app.exec_()
+    # Register global snipping tool hotkey (Ctrl+Shift+S)
+    # Passes the window's attach_image method as the send-to-chat callback.
+    # If MainWindow does not yet expose attach_image, wire it up there.
+    register_snip_hotkey(
+        root=window,
+        send_to_chat_callback=getattr(window, "attach_image", lambda b64, prompt: None)
+    )
+
+    exit_code = app.exec_(())
     scheduler.stop()
     sys.exit(exit_code)
 
