@@ -2,6 +2,8 @@
 
 import base64
 import io
+import os
+import sys
 
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QHBoxLayout,
@@ -18,7 +20,64 @@ import keyboard
 _active_overlay = None
 
 
-# ── Helpers ──────────────────────────────────────────────────────
+# ── Tesseract path auto-detection (Windows) ───────────────────────────────────
+
+def _find_tesseract() -> str | None:
+    """
+    Try common Tesseract install locations on Windows.
+    Returns the full path to tesseract.exe or None if not found.
+    """
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Tesseract-OCR", "tesseract.exe"),
+        os.path.join(os.environ.get("APPDATA", ""),      "Tesseract-OCR", "tesseract.exe"),
+        # UB Mannheim installer default
+        r"C:\Users\" + os.environ.get("USERNAME", "") + r"\AppData\Local\Programs\Tesseract-OCR\tesseract.exe",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _configure_tesseract():
+    """
+    Attempt to configure pytesseract's cmd path automatically.
+    Returns (ok: bool, message: str).
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        return False, "pytesseract not installed — run: pip install pytesseract"
+
+    # Already works?
+    try:
+        pytesseract.get_tesseract_version()
+        return True, "ok"
+    except Exception:
+        pass
+
+    # Try to find and set the exe
+    path = _find_tesseract()
+    if path:
+        pytesseract.pytesseract.tesseract_cmd = path
+        try:
+            pytesseract.get_tesseract_version()
+            print(f"[OCR] Tesseract found at: {path}")
+            return True, "ok"
+        except Exception as e:
+            return False, str(e)
+
+    return False, (
+        "Tesseract OCR is not installed.\n\n"
+        "Download and install from:\n"
+        "https://github.com/UB-Mannheim/tesseract/wiki\n\n"
+        "Then restart Local Helper."
+    )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def pil_to_qpixmap(img: Image.Image) -> QPixmap:
     buf = io.BytesIO()
@@ -34,7 +93,7 @@ def image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ── Fullscreen snip overlay ───────────────────────────────────────────────
+# ── Fullscreen snip overlay ───────────────────────────────────────────────────
 
 class SnipOverlay(QWidget):
     """Fullscreen semi-transparent overlay — user drags to select a region."""
@@ -59,30 +118,46 @@ class SnipOverlay(QWidget):
 
         self._origin = QPoint()
         self._rubber = QRubberBand(QRubberBand.Rectangle, self)
+        self._dragging = False
         self.show()
 
     def paintEvent(self, _):
         painter = QPainter(self)
         painter.drawPixmap(self.rect(), self._bg)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+        # Hint text
+        painter.setPen(QColor(255, 255, 255, 180))
+        from PyQt5.QtGui import QFont as _QFont
+        painter.setFont(_QFont("Segoe UI", 12))
+        painter.drawText(
+            self.rect(),
+            Qt.AlignTop | Qt.AlignHCenter,
+            "  Drag to select area   ·   ESC or Right-click to cancel  "
+        )
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self._rubber.hide()
-            self.close()
-            _clear_overlay()
+            self._cancel()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._cancel()
+            return
         self._origin = event.pos()
         self._rubber.setGeometry(QRect(self._origin, QSize()))
         self._rubber.show()
+        self._dragging = True
 
     def mouseMoveEvent(self, event):
-        self._rubber.setGeometry(
-            QRect(self._origin, event.pos()).normalized()
-        )
+        if self._dragging:
+            self._rubber.setGeometry(
+                QRect(self._origin, event.pos()).normalized()
+            )
 
     def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton or not self._dragging:
+            return
+        self._dragging = False
         rect = QRect(self._origin, event.pos()).normalized()
         self._rubber.hide()
         self.close()
@@ -100,13 +175,18 @@ class SnipOverlay(QWidget):
         pil = Image.frombytes("RGBA", (w, h), bytes(ptr), "raw", "BGRA")
         self.snipped.emit(pil)
 
+    def _cancel(self):
+        self._rubber.hide()
+        self.close()
+        _clear_overlay()
+
 
 def _clear_overlay():
     global _active_overlay
     _active_overlay = None
 
 
-# ── Snip toolbar / result window ───────────────────────────────────────────
+# ── Snip toolbar / result window ──────────────────────────────────────────────
 
 SUGGESTED_PROMPTS = [
     "What does this say?",
@@ -270,6 +350,16 @@ class SnipToolbar(QDialog):
         self.accept()
 
     def _extract_text(self):
+        # Auto-configure tesseract before attempting OCR
+        ok, msg = _configure_tesseract()
+        if not ok:
+            self.result_lbl.setText("Tesseract not found")
+            self.result_lbl.show()
+            self.result_box.setPlainText(msg)
+            self.result_box.show()
+            self.adjustSize()
+            return
+
         from ocr_tool import run_ocr
         lang = None if self._selected_lang == "auto" else self._selected_lang
         self.result_lbl.setText("Extracting text...")
@@ -297,7 +387,7 @@ class SnipToolbar(QDialog):
         self.result_lbl.show()
 
 
-# ── Public API ────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def trigger_snip(parent_widget, send_to_chat_callback):
     """Launch the snip overlay. Must be called from the Qt main thread."""
@@ -319,13 +409,25 @@ def trigger_snip(parent_widget, send_to_chat_callback):
 def register_snip_hotkey(root, send_to_chat_callback):
     """
     Register Ctrl+Shift+X as a global hotkey.
-    Uses QTimer.singleShot to safely schedule on the Qt main thread
-    from the keyboard listener background thread.
-    Note: Ctrl+C is avoided because Python treats it as KeyboardInterrupt.
+
+    The keyboard library fires on a background thread.  We use
+    QApplication.instance() — not a closure over `root` — so the
+    lambda is always valid even if the window is recreated.
+
+    Note: Ctrl+C is intentionally avoided; Python treats it as
+    KeyboardInterrupt before Qt ever sees it.
     """
     def _on_hotkey():
         try:
-            QTimer.singleShot(0, lambda: trigger_snip(root, send_to_chat_callback))
+            app = QApplication.instance()
+            if app is None:
+                return
+            # Find the first visible top-level window as parent
+            parent = next(
+                (w for w in app.topLevelWidgets() if w.isVisible()),
+                None
+            )
+            QTimer.singleShot(0, lambda: trigger_snip(parent, send_to_chat_callback))
         except Exception as e:
             print(f"[Snip] Hotkey dispatch error: {e}")
 
