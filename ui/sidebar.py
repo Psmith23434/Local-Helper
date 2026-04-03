@@ -12,6 +12,8 @@ import database as db
 from config import TEMPLATES_DIR
 from ui.space_dialog import SpaceDialog
 
+QUICK_CHAT_SPACE_NAME = "Quick Chat"
+
 
 class Sidebar(QWidget):
     thread_selected = pyqtSignal(int)   # thread_id
@@ -29,9 +31,20 @@ class Sidebar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # Space selector row
+        # ── Quick Chat button (always visible at top) ──
+        self.btn_quick_chat = QPushButton("➕  New Chat")
+        self.btn_quick_chat.setFixedHeight(36)
+        self.btn_quick_chat.setStyleSheet(
+            "QPushButton { background: #1a73e8; color: white; font-weight: bold; "
+            "border-radius: 6px; font-size: 13px; } "
+            "QPushButton:hover { background: #1558b0; }"
+        )
+        self.btn_quick_chat.clicked.connect(self._quick_chat)
+        layout.addWidget(self.btn_quick_chat)
+
+        # ── Space selector ──
         lbl = QLabel("Space")
-        lbl.setStyleSheet("font-weight: bold; font-size: 13px;")
+        lbl.setStyleSheet("font-weight: bold; font-size: 13px; margin-top: 6px;")
         layout.addWidget(lbl)
 
         self.space_combo = QComboBox()
@@ -40,10 +53,10 @@ class Sidebar(QWidget):
 
         # Space action buttons
         btn_row = QHBoxLayout()
-        self.btn_new_space    = QPushButton("+ New")
+        self.btn_new_space     = QPushButton("+ New")
         self.btn_from_template = QPushButton("Template")
-        self.btn_edit_space   = QPushButton("Edit")
-        self.btn_del_space    = QPushButton("Delete")
+        self.btn_edit_space    = QPushButton("Edit")
+        self.btn_del_space     = QPushButton("Delete")
         for b in [self.btn_new_space, self.btn_from_template, self.btn_edit_space, self.btn_del_space]:
             b.setFixedHeight(26)
             btn_row.addWidget(b)
@@ -54,10 +67,18 @@ class Sidebar(QWidget):
         self.btn_edit_space.clicked.connect(self._edit_space)
         self.btn_del_space.clicked.connect(self._delete_space)
 
-        # Thread list
+        # ── Thread list ──
+        thread_header = QHBoxLayout()
         lbl2 = QLabel("Threads")
         lbl2.setStyleSheet("font-weight: bold; font-size: 13px; margin-top: 8px;")
-        layout.addWidget(lbl2)
+        thread_header.addWidget(lbl2)
+        thread_header.addStretch()
+        self.btn_new_thread = QPushButton("+ New")
+        self.btn_new_thread.setFixedHeight(22)
+        self.btn_new_thread.setFixedWidth(50)
+        self.btn_new_thread.clicked.connect(self._new_thread)
+        thread_header.addWidget(self.btn_new_thread)
+        layout.addLayout(thread_header)
 
         self.thread_list = QListWidget()
         self.thread_list.itemClicked.connect(self._on_thread_clicked)
@@ -65,10 +86,40 @@ class Sidebar(QWidget):
         self.thread_list.customContextMenuRequested.connect(self._thread_context_menu)
         layout.addWidget(self.thread_list)
 
-        self.btn_new_thread = QPushButton("+ New Thread")
-        self.btn_new_thread.clicked.connect(self._new_thread)
-        layout.addWidget(self.btn_new_thread)
+    # ─────────────────────────────────────────────
+    # Quick Chat — one click starts a new thread in the Quick Chat space
+    def _quick_chat(self):
+        space_id = self._get_or_create_quick_chat_space()
+        # Select the Quick Chat space in the combo
+        for i in range(self.space_combo.count()):
+            if self.space_combo.itemData(i) == space_id:
+                self.space_combo.setCurrentIndex(i)
+                break
+        # Create a fresh thread and select it
+        thread_id = db.create_thread(space_id)
+        self._load_threads()
+        self._select_thread_item(thread_id)
+        self.thread_selected.emit(thread_id)
 
+    def _get_or_create_quick_chat_space(self) -> int:
+        """Return the Quick Chat space id, creating it if needed."""
+        for s in db.get_spaces():
+            if s["name"] == QUICK_CHAT_SPACE_NAME:
+                return s["id"]
+        # Create it
+        db.create_space(
+            name=QUICK_CHAT_SPACE_NAME,
+            instructions="You are a helpful assistant.",
+            model="",
+            github_repo="",
+            web_search=True,
+        )
+        self._load_spaces()
+        for s in db.get_spaces():
+            if s["name"] == QUICK_CHAT_SPACE_NAME:
+                return s["id"]
+
+    # ─────────────────────────────────────────────
     def _load_spaces(self):
         self.space_combo.blockSignals(True)
         self.space_combo.clear()
@@ -87,6 +138,16 @@ class Sidebar(QWidget):
         self._load_threads()
         if self.current_space_id:
             self.space_changed.emit(self.current_space_id)
+            # Auto-select first thread if one exists, else auto-create one
+            if self.thread_list.count() > 0:
+                first = self.thread_list.item(0)
+                self.thread_list.setCurrentItem(first)
+                self.thread_selected.emit(first.data(Qt.UserRole))
+            else:
+                thread_id = db.create_thread(self.current_space_id)
+                self._load_threads()
+                self._select_thread_item(thread_id)
+                self.thread_selected.emit(thread_id)
 
     def _load_threads(self):
         self.thread_list.clear()
@@ -96,6 +157,14 @@ class Sidebar(QWidget):
             item = QListWidgetItem(t["title"])
             item.setData(Qt.UserRole, t["id"])
             self.thread_list.addItem(item)
+
+    def _select_thread_item(self, thread_id: int):
+        """Highlight the list item matching thread_id."""
+        for i in range(self.thread_list.count()):
+            item = self.thread_list.item(i)
+            if item.data(Qt.UserRole) == thread_id:
+                self.thread_list.setCurrentItem(item)
+                break
 
     def _on_thread_clicked(self, item):
         thread_id = item.data(Qt.UserRole)
@@ -119,12 +188,18 @@ class Sidebar(QWidget):
             if QMessageBox.question(self, "Delete Thread", "Delete this thread?") == QMessageBox.Yes:
                 db.delete_thread(thread_id)
                 self._load_threads()
+                # Auto-select first remaining thread
+                if self.thread_list.count() > 0:
+                    first = self.thread_list.item(0)
+                    self.thread_list.setCurrentItem(first)
+                    self.thread_selected.emit(first.data(Qt.UserRole))
 
     def _new_thread(self):
         if not self.current_space_id:
             return
         thread_id = db.create_thread(self.current_space_id)
         self._load_threads()
+        self._select_thread_item(thread_id)
         self.thread_selected.emit(thread_id)
 
     def _new_space(self):
