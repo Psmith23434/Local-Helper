@@ -22,18 +22,23 @@ _active_overlay = None
 
 # ── Tesseract path auto-detection (Windows) ───────────────────────────────────
 
-def _find_tesseract() -> str | None:
+def _find_tesseract():
     """
     Try common Tesseract install locations on Windows.
-    Returns the full path to tesseract.exe or None if not found.
+    Returns the full path to tesseract.exe, or None if not found.
     """
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    app_data  = os.environ.get("APPDATA", "")
+    username  = os.environ.get("USERNAME", "")
+
     candidates = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Tesseract-OCR", "tesseract.exe"),
-        os.path.join(os.environ.get("APPDATA", ""),      "Tesseract-OCR", "tesseract.exe"),
-        # UB Mannheim installer default
-        r"C:\Users\" + os.environ.get("USERNAME", "") + r"\AppData\Local\Programs\Tesseract-OCR\tesseract.exe",
+        os.path.join("C:\\", "Program Files",       "Tesseract-OCR", "tesseract.exe"),
+        os.path.join("C:\\", "Program Files (x86)", "Tesseract-OCR", "tesseract.exe"),
+        os.path.join(local_app, "Tesseract-OCR", "tesseract.exe"),
+        os.path.join(app_data,  "Tesseract-OCR", "tesseract.exe"),
+        # UB Mannheim installer sometimes places it here
+        os.path.join("C:\\", "Users", username, "AppData", "Local",
+                     "Programs", "Tesseract-OCR", "tesseract.exe"),
     ]
     for path in candidates:
         if path and os.path.isfile(path):
@@ -58,7 +63,6 @@ def _configure_tesseract():
     except Exception:
         pass
 
-    # Try to find and set the exe
     path = _find_tesseract()
     if path:
         pytesseract.pytesseract.tesseract_cmd = path
@@ -79,7 +83,7 @@ def _configure_tesseract():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def pil_to_qpixmap(img: Image.Image) -> QPixmap:
+def pil_to_qpixmap(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -87,7 +91,7 @@ def pil_to_qpixmap(img: Image.Image) -> QPixmap:
     return QPixmap.fromImage(qimg)
 
 
-def image_to_base64(img: Image.Image) -> str:
+def image_to_base64(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -125,14 +129,13 @@ class SnipOverlay(QWidget):
         painter = QPainter(self)
         painter.drawPixmap(self.rect(), self._bg)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
-        # Hint text
         painter.setPen(QColor(255, 255, 255, 180))
         from PyQt5.QtGui import QFont as _QFont
         painter.setFont(_QFont("Segoe UI", 12))
         painter.drawText(
             self.rect(),
             Qt.AlignTop | Qt.AlignHCenter,
-            "  Drag to select area   ·   ESC or Right-click to cancel  "
+            "  Drag to select area   \u00b7   ESC or Right-click to cancel  "
         )
 
     def keyPressEvent(self, event):
@@ -215,7 +218,7 @@ LANGUAGES = [
 class SnipToolbar(QDialog):
     """Post-snip action dialog — Send to AI / OCR / Save / Copy."""
 
-    def __init__(self, image: Image.Image, send_to_chat_callback, parent=None):
+    def __init__(self, image, send_to_chat_callback, parent=None):
         super().__init__(parent, Qt.WindowStaysOnTopHint)
         self.image = image
         self.send_to_chat_callback = send_to_chat_callback
@@ -233,7 +236,6 @@ class SnipToolbar(QDialog):
         root.setSpacing(10)
         root.setContentsMargins(14, 14, 14, 14)
 
-        # Preview
         preview_pix = pil_to_qpixmap(self.image).scaledToWidth(490, Qt.SmoothTransformation)
         lbl_preview = QLabel()
         lbl_preview.setPixmap(preview_pix)
@@ -241,7 +243,6 @@ class SnipToolbar(QDialog):
         lbl_preview.setStyleSheet(f"border:1px solid {d['border']};border-radius:6px;padding:2px;")
         root.addWidget(lbl_preview)
 
-        # OCR mode
         mode_row = QHBoxLayout()
         mode_lbl = QLabel("OCR Mode:")
         mode_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
@@ -258,7 +259,6 @@ class SnipToolbar(QDialog):
         mode_row.addStretch()
         root.addLayout(mode_row)
 
-        # Language bar
         self.lang_widget = QWidget()
         lang_row = QHBoxLayout(self.lang_widget)
         lang_row.setContentsMargins(0, 0, 0, 0)
@@ -284,7 +284,6 @@ class SnipToolbar(QDialog):
         lang_row.addStretch()
         root.addWidget(self.lang_widget)
 
-        # Prompt
         from PyQt5.QtWidgets import QComboBox
         prompt_row = QHBoxLayout()
         prompt_lbl = QLabel("Prompt:")
@@ -297,7 +296,6 @@ class SnipToolbar(QDialog):
         prompt_row.addWidget(self.prompt_combo)
         root.addLayout(prompt_row)
 
-        # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         for text, fn in [
@@ -318,7 +316,6 @@ class SnipToolbar(QDialog):
         btn_row.addStretch()
         root.addLayout(btn_row)
 
-        # Result area
         self.result_lbl = QLabel("")
         self.result_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
         self.result_lbl.hide()
@@ -335,11 +332,11 @@ class SnipToolbar(QDialog):
         self.result_box.hide()
         root.addWidget(self.result_box)
 
-    def _toggle_lang_bar(self, quick_checked: bool):
+    def _toggle_lang_bar(self, quick_checked):
         self.lang_widget.setVisible(quick_checked)
         self._ocr_mode = "quick" if quick_checked else "ai"
 
-    def _select_lang(self, code: str):
+    def _select_lang(self, code):
         self._selected_lang = code
         for c, btn in self._lang_btns.items():
             btn.setChecked(c == code)
@@ -350,7 +347,6 @@ class SnipToolbar(QDialog):
         self.accept()
 
     def _extract_text(self):
-        # Auto-configure tesseract before attempting OCR
         ok, msg = _configure_tesseract()
         if not ok:
             self.result_lbl.setText("Tesseract not found")
@@ -392,14 +388,11 @@ class SnipToolbar(QDialog):
 def trigger_snip(parent_widget, send_to_chat_callback):
     """Launch the snip overlay. Must be called from the Qt main thread."""
     global _active_overlay
-
-    # Prevent double-open
     if _active_overlay is not None:
         return
-
     _active_overlay = SnipOverlay()
 
-    def on_snipped(image: Image.Image):
+    def on_snipped(image):
         toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
         toolbar.exec_()
 
@@ -409,20 +402,14 @@ def trigger_snip(parent_widget, send_to_chat_callback):
 def register_snip_hotkey(root, send_to_chat_callback):
     """
     Register Ctrl+Shift+X as a global hotkey.
-
-    The keyboard library fires on a background thread.  We use
-    QApplication.instance() — not a closure over `root` — so the
-    lambda is always valid even if the window is recreated.
-
-    Note: Ctrl+C is intentionally avoided; Python treats it as
-    KeyboardInterrupt before Qt ever sees it.
+    Uses QApplication.instance() at call-time (not a stale closure).
+    Ctrl+C avoided — Python intercepts it as KeyboardInterrupt.
     """
     def _on_hotkey():
         try:
             app = QApplication.instance()
             if app is None:
                 return
-            # Find the first visible top-level window as parent
             parent = next(
                 (w for w in app.topLevelWidgets() if w.isVisible()),
                 None
