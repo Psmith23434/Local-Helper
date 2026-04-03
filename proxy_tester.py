@@ -1,15 +1,15 @@
-"""Simple proxy/API tester - sends a minimal request to each model and shows the result."""
+"""Simple proxy/API tester - uses raw requests (no SDK) to avoid header conflicts."""
 
 import sys
+import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QTextEdit, QLineEdit
 )
 from PyQt5.QtCore import QThread, pyqtSignal
-from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 
 # ─────────────────────────────────────────────
-BASE_URL  = "https://YOUR_PROXY_URL/v1"   # <-- replace
+BASE_URL  = "https://YOUR_PROXY_URL/v1"   # <-- replace (no trailing slash)
 API_KEY   = "YOUR_API_KEY"                 # <-- replace
 
 MODELS = [
@@ -35,60 +35,56 @@ class TestWorker(QThread):
     def __init__(self, model, base_url, api_key):
         super().__init__()
         self.model    = model
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
         self.api_key  = api_key
 
     def run(self):
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": TEST_PROMPT}],
+            "max_tokens": 60,
+        }
         try:
-            client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": TEST_PROMPT}],
-                max_tokens=60,
-            )
-            reply  = response.choices[0].message.content.strip()
-            usage  = response.usage
-            tokens = f"in={usage.prompt_tokens} out={usage.completion_tokens} total={usage.total_tokens}"
-            self.result.emit(self.model, reply, tokens)
-
-        except APIStatusError as e:
-            # HTTP error returned by the proxy/API (4xx, 5xx)
-            body = ""
-            try:
-                body = e.response.text
-            except Exception:
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            if r.status_code == 200:
+                data   = r.json()
+                reply  = data["choices"][0]["message"]["content"].strip()
+                usage  = data.get("usage", {})
+                tokens = (
+                    f"in={usage.get('prompt_tokens','?')} "
+                    f"out={usage.get('completion_tokens','?')} "
+                    f"total={usage.get('total_tokens','?')}"
+                )
+                self.result.emit(self.model, reply, tokens)
+            else:
+                # Show full debug info for non-200
                 try:
-                    body = str(e.response.json())
+                    body = r.json()
                 except Exception:
-                    body = repr(getattr(e, 'body', ''))
-            parts = [f"status={getattr(e, 'status_code', 'unknown')}"]
-            req_id = getattr(e, 'request_id', None)
-            if req_id:
-                parts.append(f"request_id={req_id}")
-            parts.append(f"type={type(e).__name__}")
-            parts.append(f"message={str(e)}")
-            if body:
-                parts.append(f"body={body}")
-            self.result.emit(self.model, "ERROR:\n" + "\n".join(parts), "")
-
-        except RateLimitError as e:
-            self.result.emit(self.model, f"ERROR:\ntype=RateLimitError\nmessage={str(e)}", "")
-
-        except APIConnectionError as e:
-            self.result.emit(
-                self.model,
-                f"ERROR:\ntype={type(e).__name__}\nCould not connect to: {self.base_url}\ndetail={repr(e)}",
-                ""
-            )
-
+                    body = r.text
+                details = (
+                    f"status={r.status_code}\n"
+                    f"url={url}\n"
+                    f"body={body}"
+                )
+                self.result.emit(self.model, f"ERROR:\n{details}", "")
+        except requests.exceptions.ConnectionError as e:
+            self.result.emit(self.model, f"ERROR:\ntype=ConnectionError\nCannot reach: {url}\ndetail={e}", "")
+        except requests.exceptions.Timeout:
+            self.result.emit(self.model, f"ERROR:\ntype=Timeout\nRequest timed out after 30s\nurl={url}", "")
         except Exception as e:
-            self.result.emit(self.model, f"ERROR:\ntype={type(e).__name__}\ndetail={repr(e)}", "")
+            self.result.emit(self.model, f"ERROR:\ntype={type(e).__name__}\ndetail={e}", "")
 
 
 class ProxyTester(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Proxy Tester (Debug)")
+        self.setWindowTitle("Proxy Tester")
         self.resize(760, 540)
         self._workers = []
         self._build_ui()
@@ -142,11 +138,11 @@ class ProxyTester(QWidget):
 
     def _run(self, model):
         base_url, api_key = self._get_config()
-        self.output.append(f'<span style="color:#888">⏳ Testing <b>{model}</b> → {base_url}</span>')
+        self.output.append(f'<span style="color:#888">⏳ Testing <b>{model}</b> → {base_url}/chat/completions</span>')
         worker = TestWorker(model, base_url, api_key)
         worker.result.connect(self._on_result)
         worker.start()
-        self._workers.append(worker)  # prevent GC
+        self._workers.append(worker)
 
     def _on_result(self, model, reply, tokens):
         if reply.startswith("ERROR:"):
