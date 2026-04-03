@@ -7,6 +7,6 @@ apscheduler>=3.10
 requests>=2.31
 # Snipping tool & OCR
 Pillow>=10.0
-pytesseract>=0.3.10
-langdetect>=1.0.9
+numpy>=1.24
+easyocr>=1.7
 keyboard>=0.13.5

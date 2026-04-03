@@ -1,25 +1,40 @@
-"""OCR helpers — Tesseract (quick) and GPT-4o Vision (AI)."""
+"""OCR helpers — EasyOCR (quick/offline) and GPT-4o Vision (AI/online)."""
 
 import base64
 import io
+import numpy as np
 from PIL import Image
 
-# ── Tesseract language map ────────────────────────────────────────────────────
+# EasyOCR language codes for the toolbar selector
+# Maps the UI language codes → EasyOCR language list
 LANG_MAP = {
-    "en": "eng",
-    "de": "deu",
-    "fr": "fra",
-    "es": "spa",
-    "it": "ita",
-    "nl": "nld",
-    "pt": "por",
-    "ru": "rus",
-    "pl": "pol",
-    "cs": "ces",
-    "sv": "swe",
+    "eng": ["en"],
+    "deu": ["de"],
+    "fra": ["fr"],
+    "spa": ["es"],
+    "ita": ["it"],
+    "nld": ["nl"],
+    "por": ["pt"],
+    "rus": ["ru"],
+    "pol": ["pl"],
+    "ces": ["cs"],
+    "swe": ["sv"],
 }
 
-DEFAULT_LANG = "eng+deu"  # fallback when auto-detect fails
+DEFAULT_LANGS = ["en", "de"]  # auto mode: English + German
+
+# Module-level reader cache — EasyOCR model loads once (~1–2 s), reused after
+_reader_cache = {}
+
+
+def _get_reader(langs: list):
+    """Return a cached EasyOCR Reader for the given language list."""
+    import easyocr
+    key = tuple(sorted(langs))
+    if key not in _reader_cache:
+        print(f"[OCR] Loading EasyOCR model for languages: {langs}")
+        _reader_cache[key] = easyocr.Reader(langs, gpu=False)
+    return _reader_cache[key]
 
 
 def run_ocr(image: Image.Image, mode: str = "quick", lang_override: str = None) -> str:
@@ -28,61 +43,42 @@ def run_ocr(image: Image.Image, mode: str = "quick", lang_override: str = None) 
 
     Args:
         image:         PIL Image to process.
-        mode:          'quick' = Tesseract (offline)
+        mode:          'quick' = EasyOCR (offline)
                        'ai'    = GPT-4o vision (online)
-        lang_override: Tesseract language code (e.g. 'deu+eng').
+        lang_override: Tesseract-style language code from UI (e.g. 'deu').
+                       Mapped internally to EasyOCR codes.
 
     Returns:
         Extracted text as a string.
     """
     if mode == "ai":
         return _ai_ocr(image)
-    return _tesseract_ocr(image, lang_override)
+    return _easyocr_ocr(image, lang_override)
 
 
-# ── Quick OCR (Tesseract) ─────────────────────────────────────────────────────
+# ── Quick OCR (EasyOCR) ───────────────────────────────────────────────────────
 
-def _tesseract_ocr(image: Image.Image, lang_override: str = None) -> str:
+def _easyocr_ocr(image: Image.Image, lang_override: str = None) -> str:
     try:
-        import pytesseract
+        import easyocr  # noqa — just to give a clean ImportError message
     except ImportError:
-        return "[Error] pytesseract not installed. Run: pip install pytesseract"
+        return "[Error] easyocr not installed. Run: pip install easyocr"
 
-    # Auto-configure path (snipping_tool also calls this, but safe to call twice)
-    from snipping_tool import _configure_tesseract
-    ok, msg = _configure_tesseract()
-    if not ok:
-        return f"[Tesseract Error] {msg}"
-
-    lang = lang_override if lang_override else _detect_language(image)
+    # Resolve language list
+    if lang_override and lang_override != "auto":
+        langs = LANG_MAP.get(lang_override, DEFAULT_LANGS)
+    else:
+        langs = DEFAULT_LANGS
 
     try:
-        text = pytesseract.image_to_string(image, lang=lang)
-        return text.strip() or "[No text found]"
+        reader = _get_reader(langs)
+        # EasyOCR accepts numpy arrays
+        img_array = np.array(image.convert("RGB"))
+        results = reader.readtext(img_array, detail=0, paragraph=True)
+        text = "\n".join(results).strip()
+        return text or "[No text found]"
     except Exception as e:
-        return f"[Tesseract Error] {e}"
-
-
-def _detect_language(image: Image.Image) -> str:
-    try:
-        import pytesseract
-        from langdetect import detect, LangDetectException
-
-        raw = pytesseract.image_to_string(image, lang="eng")
-        if not raw.strip():
-            return DEFAULT_LANG
-
-        detected = detect(raw)
-        lang = LANG_MAP.get(detected)
-        if lang:
-            print(f"[OCR] Auto-detected: {detected} → {lang}")
-            return lang
-        print(f"[OCR] Language '{detected}' not in map, using default")
-        return DEFAULT_LANG
-
-    except Exception as e:
-        print(f"[OCR] Language detection failed: {e}")
-        return DEFAULT_LANG
+        return f"[EasyOCR Error] {e}"
 
 
 # ── AI OCR (GPT-4o Vision) ────────────────────────────────────────────────────

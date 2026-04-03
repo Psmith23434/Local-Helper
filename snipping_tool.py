@@ -3,7 +3,6 @@
 import base64
 import io
 import os
-import sys
 
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QHBoxLayout,
@@ -18,67 +17,6 @@ import keyboard
 
 # Keep a module-level reference so the overlay is never garbage-collected
 _active_overlay = None
-
-
-# ── Tesseract path auto-detection (Windows) ───────────────────────────────────
-
-def _find_tesseract():
-    """
-    Try common Tesseract install locations on Windows.
-    Returns the full path to tesseract.exe, or None if not found.
-    """
-    local_app = os.environ.get("LOCALAPPDATA", "")
-    app_data  = os.environ.get("APPDATA", "")
-    username  = os.environ.get("USERNAME", "")
-
-    candidates = [
-        os.path.join("C:\\", "Program Files",       "Tesseract-OCR", "tesseract.exe"),
-        os.path.join("C:\\", "Program Files (x86)", "Tesseract-OCR", "tesseract.exe"),
-        os.path.join(local_app, "Tesseract-OCR", "tesseract.exe"),
-        os.path.join(app_data,  "Tesseract-OCR", "tesseract.exe"),
-        # UB Mannheim installer sometimes places it here
-        os.path.join("C:\\", "Users", username, "AppData", "Local",
-                     "Programs", "Tesseract-OCR", "tesseract.exe"),
-    ]
-    for path in candidates:
-        if path and os.path.isfile(path):
-            return path
-    return None
-
-
-def _configure_tesseract():
-    """
-    Attempt to configure pytesseract's cmd path automatically.
-    Returns (ok: bool, message: str).
-    """
-    try:
-        import pytesseract
-    except ImportError:
-        return False, "pytesseract not installed — run: pip install pytesseract"
-
-    # Already works?
-    try:
-        pytesseract.get_tesseract_version()
-        return True, "ok"
-    except Exception:
-        pass
-
-    path = _find_tesseract()
-    if path:
-        pytesseract.pytesseract.tesseract_cmd = path
-        try:
-            pytesseract.get_tesseract_version()
-            print(f"[OCR] Tesseract found at: {path}")
-            return True, "ok"
-        except Exception as e:
-            return False, str(e)
-
-    return False, (
-        "Tesseract OCR is not installed.\n\n"
-        "Download and install from:\n"
-        "https://github.com/UB-Mannheim/tesseract/wiki\n\n"
-        "Then restart Local Helper."
-    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -200,18 +138,18 @@ SUGGESTED_PROMPTS = [
 ]
 
 LANGUAGES = [
-    ("Auto", "auto"),
-    ("EN",   "eng"),
-    ("DE",   "deu"),
-    ("FR",   "fra"),
-    ("ES",   "spa"),
-    ("IT",   "ita"),
-    ("NL",   "nld"),
-    ("PT",   "por"),
-    ("RU",   "rus"),
-    ("PL",   "pol"),
-    ("CS",   "ces"),
-    ("SV",   "swe"),
+    ("Auto",  "auto"),
+    ("EN",    "eng"),
+    ("DE",    "deu"),
+    ("FR",    "fra"),
+    ("ES",    "spa"),
+    ("IT",    "ita"),
+    ("NL",    "nld"),
+    ("PT",    "por"),
+    ("RU",    "rus"),
+    ("PL",    "pol"),
+    ("CS",    "ces"),
+    ("SV",    "swe"),
 ]
 
 
@@ -247,7 +185,7 @@ class SnipToolbar(QDialog):
         mode_lbl = QLabel("OCR Mode:")
         mode_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
         mode_row.addWidget(mode_lbl)
-        self.rb_quick = QRadioButton("⚡ Quick (Tesseract)")
+        self.rb_quick = QRadioButton("⚡ Quick (EasyOCR)")
         self.rb_ai    = QRadioButton("🤖 AI OCR")
         self.rb_quick.setChecked(True)
         self.rb_quick.toggled.connect(self._toggle_lang_bar)
@@ -347,18 +285,9 @@ class SnipToolbar(QDialog):
         self.accept()
 
     def _extract_text(self):
-        ok, msg = _configure_tesseract()
-        if not ok:
-            self.result_lbl.setText("Tesseract not found")
-            self.result_lbl.show()
-            self.result_box.setPlainText(msg)
-            self.result_box.show()
-            self.adjustSize()
-            return
-
         from ocr_tool import run_ocr
         lang = None if self._selected_lang == "auto" else self._selected_lang
-        self.result_lbl.setText("Extracting text...")
+        self.result_lbl.setText("Extracting text (first run may take a moment to load model)...")
         self.result_lbl.show()
         self.result_box.hide()
         QApplication.processEvents()
