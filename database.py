@@ -23,6 +23,7 @@ def init_db():
             model       TEXT DEFAULT '',
             github_repo TEXT DEFAULT '',
             web_search  INTEGER DEFAULT 1,
+            dropbox_files TEXT DEFAULT '[]',
             created_at  TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -61,11 +62,16 @@ def init_db():
             FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
         );
     """)
-    conn.commit()
+    # Migration: add dropbox_files column to existing databases
+    try:
+        conn.execute("ALTER TABLE spaces ADD COLUMN dropbox_files TEXT DEFAULT '[]'")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
     conn.close()
 
 
-# ── Spaces ────────────────────────────────────
+# ── Spaces ──────────────────────────────────────────────
 def create_space(name, instructions="", model="", github_repo="", web_search=True):
     conn = get_conn()
     c = conn.cursor()
@@ -103,6 +109,30 @@ def update_space(space_id, name, instructions, model, github_repo, web_search):
     conn.close()
 
 
+def update_space_dropbox_files(space_id: int, filenames: list):
+    """Save the list of selected Dropbox filenames (JSON) for an agent."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE spaces SET dropbox_files=? WHERE id=?",
+        (json.dumps(filenames), space_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_space_dropbox_files(space_id: int) -> list:
+    """Return the list of selected Dropbox filenames for an agent."""
+    conn = get_conn()
+    row = conn.execute("SELECT dropbox_files FROM spaces WHERE id=?", (space_id,)).fetchone()
+    conn.close()
+    if not row:
+        return []
+    try:
+        return json.loads(row["dropbox_files"] or "[]")
+    except Exception:
+        return []
+
+
 def delete_space(space_id):
     conn = get_conn()
     conn.execute("DELETE FROM spaces WHERE id=?", (space_id,))
@@ -110,7 +140,7 @@ def delete_space(space_id):
     conn.close()
 
 
-# ── Threads ───────────────────────────────────
+# ── Threads ─────────────────────────────────────────────
 def create_thread(space_id, title="New Thread"):
     conn = get_conn()
     c = conn.cursor()
@@ -144,7 +174,7 @@ def delete_thread(thread_id):
     conn.close()
 
 
-# ── Messages ──────────────────────────────────
+# ── Messages ────────────────────────────────────────────
 def add_message(thread_id, role, content):
     conn = get_conn()
     conn.execute(
@@ -164,7 +194,7 @@ def get_messages(thread_id):
     return [dict(r) for r in rows]
 
 
-# ── Space Files ───────────────────────────────
+# ── Space Files ──────────────────────────────────────────
 def add_space_file(space_id, filepath):
     conn = get_conn()
     conn.execute("INSERT INTO space_files (space_id, filepath) VALUES (?,?)", (space_id, filepath))
@@ -186,7 +216,7 @@ def remove_space_file(file_id):
     conn.close()
 
 
-# ── Scheduled Tasks ───────────────────────────
+# ── Scheduled Tasks ────────────────────────────────────────
 def add_scheduled_task(space_id, name, prompt, trigger, trigger_args):
     conn = get_conn()
     c = conn.cursor()

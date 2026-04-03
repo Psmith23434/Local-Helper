@@ -1,5 +1,6 @@
 """Agents tab — browser-style agent panel with per-agent thread lists."""
 
+import os
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMenu, QInputDialog, QMessageBox,
@@ -31,7 +32,7 @@ class AgentsTab(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(1)
 
-        # ── Left panel: agent list ────────────────────────────────────────────
+        # ── Left panel: agent list ──────────────────────────────────────
         left = QWidget()
         left.setStyleSheet(f"background:{d['surface']};border-right:1px solid {d['border']};")
         left.setMinimumWidth(170)
@@ -60,7 +61,7 @@ class AgentsTab(QWidget):
         ll.addWidget(self.agent_list)
         splitter.addWidget(left)
 
-        # ── Middle panel: thread list ─────────────────────────────────────────
+        # ── Middle panel: thread list ────────────────────────────────
         mid = QWidget()
         mid.setStyleSheet(f"background:{d['surface']};border-right:1px solid {d['border']};")
         mid.setMinimumWidth(170)
@@ -89,7 +90,7 @@ class AgentsTab(QWidget):
         ml.addWidget(self.thread_list)
         splitter.addWidget(mid)
 
-        # ── Right panel: chat ─────────────────────────────────────────────────
+        # ── Right panel: chat ─────────────────────────────────────
         self.chat = ChatWidget(
             space_id=None,
             system_prompt="You are a helpful assistant.",
@@ -111,7 +112,57 @@ class AgentsTab(QWidget):
         splitter.setSizes([200, 200, 800])
         root.addWidget(splitter)
 
-    # ── Agents ────────────────────────────────────────────────────────────────
+    # ── Dropbox context loader ─────────────────────────────────
+    def _load_dropbox_context(self, space_id: int):
+        """
+        Download selected Dropbox files for this agent and pass their
+        content to the chat widget as extra system context.
+        Order: 1) agent instructions  2) Dropbox file contents  3) user message
+        """
+        filenames = db.get_space_dropbox_files(space_id)
+        if not filenames:
+            self.chat.set_dropbox_context("")
+            return
+
+        try:
+            import dropbox_sync
+            if not dropbox_sync.is_configured():
+                self.chat.set_dropbox_context("")
+                return
+        except ImportError:
+            self.chat.set_dropbox_context("")
+            return
+
+        parts = []
+        for fname in filenames:
+            dropbox_path = f"/local_helper/{fname}"
+            # Download to a temp path in space_files/
+            local_tmp = os.path.join("space_files", f"_dropbox_ctx_{fname}")
+            os.makedirs("space_files", exist_ok=True)
+            ok = dropbox_sync.download_file(dropbox_path, local_tmp)
+            if ok:
+                try:
+                    with open(local_tmp, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    ext = os.path.splitext(fname)[1].lower()
+                    # Wrap .py files in a code block so the AI sees proper syntax
+                    if ext == ".py":
+                        parts.append(f"### {fname}\n```python\n{content}\n```")
+                    else:
+                        parts.append(f"### {fname}\n{content}")
+                except Exception:
+                    pass
+
+        combined = "\n\n".join(parts)
+        self.chat.set_dropbox_context(combined)
+        # Update status hint in the chat widget
+        if combined:
+            n = len(parts)
+            self.chat._set_status(
+                f"☁️ {n} Dropbox file{'s' if n != 1 else ''} loaded as context"
+            )
+
+    # ── Agents ─────────────────────────────────────────────────
     def _excluded_names(self):
         return {"General Chat", "Quick Chat", "🧑\u200d💻  Coding Assistant", "💬  General Chat"}
 
@@ -134,14 +185,18 @@ class AgentsTab(QWidget):
         self.chat.set_system_prompt(
             space.get("instructions") or "You are a helpful assistant."
         )
+        # Download & inject Dropbox context files
+        self._load_dropbox_context(self.current_agent_id)
         self._load_threads()
 
     def _new_agent(self):
-        d = T()
         dlg = SpaceDialog(self)
         if dlg.exec_() == QDialog.Accepted:
             data = dlg.get_data()
-            db.create_space(**data)
+            dropbox_files = data.pop("dropbox_files", [])
+            space_id = db.create_space(**data)
+            if dropbox_files:
+                db.update_space_dropbox_files(space_id, dropbox_files)
             self._load_agents()
 
     def _agent_ctx_menu(self, pos):
@@ -155,6 +210,7 @@ class AgentsTab(QWidget):
             f"QMenu::item:selected{{background:{d['accent']};color:#fff;}}"
         )
         edit   = menu.addAction("✎  Edit")
+        resync = menu.addAction("☁️  Re-sync Dropbox")
         delete = menu.addAction("✕  Delete")
         action = menu.exec_(self.agent_list.mapToGlobal(pos))
         aid = item.data(Qt.UserRole)
@@ -162,8 +218,16 @@ class AgentsTab(QWidget):
             dlg = SpaceDialog(self, db.get_space(aid))
             if dlg.exec_() == QDialog.Accepted:
                 data = dlg.get_data()
+                dropbox_files = data.pop("dropbox_files", [])
                 db.update_space(aid, **data)
+                db.update_space_dropbox_files(aid, dropbox_files)
                 item.setText("🤖  " + data["name"])
+                # Reload Dropbox context immediately if this is the active agent
+                if aid == self.current_agent_id:
+                    self._load_dropbox_context(aid)
+        elif action == resync:
+            self._load_dropbox_context(aid)
+            QMessageBox.information(self, "Re-synced", "Dropbox files re-downloaded for this agent.")
         elif action == delete:
             if QMessageBox.question(self, "Delete Agent", "Delete this agent and all threads?") == QMessageBox.Yes:
                 db.delete_space(aid)
@@ -172,7 +236,7 @@ class AgentsTab(QWidget):
                 self.chat.hide()
                 self.placeholder.show()
 
-    # ── Threads ───────────────────────────────────────────────────────────────
+    # ── Threads ───────────────────────────────────────────────
     def _load_threads(self):
         self.thread_list.clear()
         if not self.current_agent_id: return
@@ -190,6 +254,8 @@ class AgentsTab(QWidget):
 
     def _new_thread(self):
         if not self.current_agent_id: return
+        # Re-download Dropbox context for a fresh thread
+        self._load_dropbox_context(self.current_agent_id)
         tid = db.create_thread(self.current_agent_id)
         self._load_threads()
         self._select_thread(tid)

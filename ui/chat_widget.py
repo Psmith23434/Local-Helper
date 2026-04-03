@@ -17,7 +17,7 @@ from ui.theme import get as T
 from ui.styles import accent_btn_qss, code_btn_qss
 
 
-# ── Markdown renderer ──────────────────────────────────────────────
+# ── Markdown renderer ───────────────────────────────────────────
 def markdown_to_html(text: str) -> str:
     lines = text.split("\n")
     out = []
@@ -161,7 +161,7 @@ def extract_code_blocks(text: str) -> list[dict]:
     ]
 
 
-# ── Worker ────────────────────────────────────────────────────
+# ── Worker ────────────────────────────────────────────────
 class WorkerSignals(QObject):
     chunk = pyqtSignal(str)
     done  = pyqtSignal(str)
@@ -191,7 +191,7 @@ class ChatWorker(QThread):
             self.signals.error.emit(str(e))
 
 
-# ── Chat Widget ───────────────────────────────────────────────────
+# ── Chat Widget ───────────────────────────────────────────────
 class ChatWidget(QWidget):
     """
     Self-contained chat UI.
@@ -208,6 +208,7 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self.space_id          = space_id
         self.system_prompt     = system_prompt
+        self._dropbox_context  = ""   # injected between instructions and user message
         self.current_thread_id = None
         self._stream_buffer    = ""
         self._streaming        = False
@@ -215,7 +216,7 @@ class ChatWidget(QWidget):
         self._last_code_blocks: list[dict] = []
         self._on_thread_renamed = on_thread_renamed
         self._web_search_default = web_search_default
-        self._msg_count        = 0   # messages in current thread
+        self._msg_count        = 0
         self._build_ui()
 
     def _build_ui(self):
@@ -235,6 +236,22 @@ class ChatWidget(QWidget):
         self.context_label.setStyleSheet(f"color:{d['accent']};font-size:12px;font-weight:600;")
         tl.addWidget(self.context_label)
         tl.addStretch()
+
+        # Re-sync Dropbox button (only visible when Dropbox context is loaded)
+        self.btn_resync = QPushButton("☁️ Re-sync")
+        self.btn_resync.setFixedHeight(26)
+        self.btn_resync.setFixedWidth(90)
+        self.btn_resync.setCursor(Qt.PointingHandCursor)
+        self.btn_resync.setToolTip("Re-download Dropbox context files for this agent")
+        self.btn_resync.setStyleSheet(
+            f"QPushButton{{background:{d['surface2']};color:{d['muted']};border:1px solid {d['border']};"
+            f"border-radius:5px;font-size:11px;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{d['surface3']};color:{d['text']};}}"
+        )
+        self.btn_resync.clicked.connect(self._on_resync_clicked)
+        self.btn_resync.hide()  # hidden until Dropbox context is set
+        tl.addWidget(self.btn_resync)
+
         tl.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(AVAILABLE_MODELS)
@@ -326,7 +343,7 @@ class ChatWidget(QWidget):
                 self._send(); return True
         return super().eventFilter(obj, event)
 
-    # ── Public API ─────────────────────────────────────────────────
+    # ── Public API ──────────────────────────────────────────────
     def load_thread(self, thread_id: int, context_label: str = ""):
         self.current_thread_id = thread_id
         self.context_label.setText(context_label)
@@ -342,11 +359,30 @@ class ChatWidget(QWidget):
     def set_system_prompt(self, prompt: str):
         self.system_prompt = prompt
 
-    # ── Smart status helpers ───────────────────────────────────────────
+    def set_dropbox_context(self, context_text: str):
+        """Set Dropbox file content injected between agent instructions and user message."""
+        self._dropbox_context = context_text
+        if context_text:
+            self.btn_resync.show()
+        else:
+            self.btn_resync.hide()
+
+    def _on_resync_clicked(self):
+        """Signal the parent AgentsTab to re-download Dropbox files."""
+        # Walk up to find AgentsTab and call its resync method
+        parent = self.parent()
+        while parent is not None:
+            if hasattr(parent, '_load_dropbox_context') and hasattr(parent, 'current_agent_id'):
+                if parent.current_agent_id:
+                    parent._load_dropbox_context(parent.current_agent_id)
+                return
+            parent = parent.parent()
+
+    # ── Smart status helpers ────────────────────────────────────
     def _update_status_idle(self):
-        """Show useful info when not generating: model + message count + web search state."""
         model = self.model_combo.currentText()
         web   = " · 🔍 Web on" if self.web_check.isChecked() else ""
+        db_ctx = " · ☁️ Dropbox" if self._dropbox_context else ""
         count = self._msg_count
         if count == 0:
             msg_info = "No messages yet"
@@ -354,15 +390,14 @@ class ChatWidget(QWidget):
             msg_info = "1 message"
         else:
             msg_info = f"{count} messages"
-        self._set_status(f"🧠 {model}  ·  {msg_info}{web}")
+        self._set_status(f"🧠 {model}  ·  {msg_info}{web}{db_ctx}")
 
     def _on_model_changed(self, model_name: str):
-        """Flash a hint when the user switches model mid-chat."""
         if not self._streaming:
             self._set_status(f"ℹ️ Model switched to {model_name} — takes effect on next message")
             QTimer.singleShot(3000, self._update_status_idle)
 
-    # ── Rendering ─────────────────────────────────────────────────────
+    # ── Rendering ───────────────────────────────────────────────
     def _render_msg(self, role: str, content: str):
         d = T()
         if role == "user":
@@ -378,7 +413,7 @@ class ChatWidget(QWidget):
             f'<div style="color:{d["text"]}">{body}</div></div>'
         )
 
-    # ── Send ──────────────────────────────────────────────────────────
+    # ── Send ──────────────────────────────────────────────────
     def _send(self):
         if not self.current_thread_id:
             self._set_status("⚠ No thread selected.", error=True); return
@@ -393,9 +428,16 @@ class ChatWidget(QWidget):
         self._msg_count += 1
         self._render_msg("user", user_text)
 
+        # ── Build system prompt: instructions → Dropbox context → (other context appended below)
         system = self.system_prompt
-        extra  = ""
+        if self._dropbox_context:
+            system = (
+                system.rstrip() +
+                "\n\n--- Dropbox Context Files ---\n" +
+                self._dropbox_context
+            )
 
+        extra = ""
         if self.web_check.isChecked():
             self._set_status("🔍 Searching the web...")
             ctx = search.web_search(user_text)
@@ -404,7 +446,7 @@ class ChatWidget(QWidget):
         if self.space_id:
             files = db.get_space_files(self.space_id)
             if files:
-                extra += "\n\n--- Files ---\n" + file_context.build_file_context(
+                extra += "\n\n--- Local Files ---\n" + file_context.build_file_context(
                     [f["filepath"] for f in files])
             space = db.get_space(self.space_id)
             if space:
@@ -414,7 +456,7 @@ class ChatWidget(QWidget):
                     if gh: extra += f"\n\n--- GitHub: {repo} ---\n" + "\n".join(gh[:50])
 
         if extra:
-            system = (system + "\n\n--- Context ---" + extra).strip()
+            system = (system + "\n\n--- Additional Context ---" + extra).strip()
 
         history  = db.get_messages(self.current_thread_id)
         messages = [{"role": "system", "content": system}]
@@ -433,7 +475,7 @@ class ChatWidget(QWidget):
             f'background:{d["bg"]};margin-bottom:1px;">'
             f'<div style="margin-bottom:5px;font-size:11px;color:{d["muted"]};font-weight:700;'
             f'color:{d["ai_color"]}">Assistant</div>'
-            f'<div style="color:{d["muted"]};">\u25cf\u25cf\u25cf</div></div>'
+            f'<div style="color:{d["muted"]};">●●●</div></div>'
         )
 
         self.worker = ChatWorker(messages, model, stream=True)
@@ -454,9 +496,8 @@ class ChatWidget(QWidget):
 
     def _on_done(self, full_reply: str):
         self._streaming = False
-        self._msg_count += 1  # assistant message
+        self._msg_count += 1
         db.add_message(self.current_thread_id, "assistant", full_reply)
-        # Re-render cleanly with markdown
         self.display.clear()
         for msg in db.get_messages(self.current_thread_id):
             self._render_msg(msg["role"], msg["content"])
@@ -475,9 +516,8 @@ class ChatWidget(QWidget):
         self._update_status_idle()
         self.status_changed.emit("Ready")
 
-        # Auto-rename thread — include model name in title
         model = self.model_combo.currentText()
-        short_model = model.split("/")[-1] if "/" in model else model  # strip provider prefix
+        short_model = model.split("/")[-1] if "/" in model else model
 
         if self.space_id:
             threads = db.get_threads(self.space_id)
@@ -489,7 +529,6 @@ class ChatWidget(QWidget):
                 if self._on_thread_renamed:
                     self._on_thread_renamed(self.current_thread_id, title)
         else:
-            # General chat: auto-rename using first user message + model
             msgs = db.get_messages(self.current_thread_id)
             first_user = next((m["content"] for m in msgs if m["role"] == "user"), "")
             base = (first_user[:38] + "…") if len(first_user) > 38 else first_user
@@ -509,7 +548,7 @@ class ChatWidget(QWidget):
         self.send_btn.setEnabled(True)
         self._set_status(f"❌ {err}", error=True)
 
-    # ── Code actions ──────────────────────────────────────────────────
+    # ── Code actions ────────────────────────────────────────────
     def _first_code(self):
         return self._last_code_blocks[0]["code"] if self._last_code_blocks else ""
 

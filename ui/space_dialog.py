@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QComboBox, QCheckBox,
     QPushButton, QFileDialog, QListWidget, QListWidgetItem,
     QDialogButtonBox, QGroupBox, QTabWidget, QWidget,
-    QInputDialog, QMessageBox
+    QInputDialog, QMessageBox, QProgressDialog
 )
 from PyQt5.QtCore import Qt
 from config import AVAILABLE_MODELS
@@ -20,7 +20,7 @@ class SpaceDialog(QDialog):
         self.space = space
         self.space_id = space["id"] if space else None
         self.setWindowTitle("Edit Agent" if space else "New Agent")
-        self.resize(560, 520)
+        self.resize(580, 560)
         self._build_ui()
         if space:
             self._populate(space)
@@ -29,7 +29,7 @@ class SpaceDialog(QDialog):
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
 
-        # ── Tab 1: General ──────────────────────────
+        # ── Tab 1: General ────────────────────────────────
         general = QWidget()
         form = QFormLayout(general)
         self.name_edit = QLineEdit()
@@ -48,23 +48,55 @@ class SpaceDialog(QDialog):
         form.addRow("GitHub Repo:", self.github_repo_edit)
         tabs.addTab(general, "General")
 
-        # ── Tab 2: Files ────────────────────────────
+        # ── Tab 2: Dropbox Files ──────────────────────────
+        dropbox_tab = QWidget()
+        dl = QVBoxLayout(dropbox_tab)
+        dl.setSpacing(8)
+
+        info = QLabel(
+            "Select files from your Dropbox /local_helper/ folder to use as context for this agent.\n"
+            "Supported: .txt, .py, .md — content is read and injected into the system prompt."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #888; font-size: 11px;")
+        dl.addWidget(info)
+
+        btn_row = QHBoxLayout()
+        self.btn_fetch_dropbox = QPushButton("☁️  Fetch from Dropbox")
+        self.btn_fetch_dropbox.setFixedHeight(28)
+        self.btn_fetch_dropbox.clicked.connect(self._fetch_dropbox_files)
+        self.dropbox_status = QLabel("")
+        self.dropbox_status.setStyleSheet("color: #888; font-size: 11px;")
+        btn_row.addWidget(self.btn_fetch_dropbox)
+        btn_row.addWidget(self.dropbox_status)
+        btn_row.addStretch()
+        dl.addLayout(btn_row)
+
+        self.dropbox_file_list = QListWidget()
+        self.dropbox_file_list.setToolTip("Check files to use as AI context for this agent")
+        dl.addWidget(self.dropbox_file_list)
+
+        dl.addWidget(QLabel("Checked files will be downloaded and read every time you send a message."))
+
+        tabs.addTab(dropbox_tab, "☁️  Dropbox")
+
+        # ── Tab 3: Local Files ───────────────────────────
         files_tab = QWidget()
         fl = QVBoxLayout(files_tab)
         self.file_list = QListWidget()
-        btn_row = QHBoxLayout()
+        btn_row2 = QHBoxLayout()
         self.btn_add_file = QPushButton("Add File")
         self.btn_remove_file = QPushButton("Remove")
-        btn_row.addWidget(self.btn_add_file)
-        btn_row.addWidget(self.btn_remove_file)
-        fl.addWidget(QLabel("Attached files (used as AI context):"))
+        btn_row2.addWidget(self.btn_add_file)
+        btn_row2.addWidget(self.btn_remove_file)
+        fl.addWidget(QLabel("Local files attached as AI context:"))
         fl.addWidget(self.file_list)
-        fl.addLayout(btn_row)
+        fl.addLayout(btn_row2)
         self.btn_add_file.clicked.connect(self._add_file)
         self.btn_remove_file.clicked.connect(self._remove_file)
-        tabs.addTab(files_tab, "Files")
+        tabs.addTab(files_tab, "Local Files")
 
-        # ── Tab 3: Scheduled Tasks ──────────────────
+        # ── Tab 4: Scheduled Tasks ────────────────────────
         tasks_tab = QWidget()
         tl = QVBoxLayout(tasks_tab)
         self.task_list = QListWidget()
@@ -104,7 +136,69 @@ class SpaceDialog(QDialog):
                 item = QListWidgetItem(f"{t['name']} [{t['trigger']}]")
                 item.setData(Qt.UserRole, t["id"])
                 self.task_list.addItem(item)
+            # Load previously saved Dropbox file selections
+            saved = db.get_space_dropbox_files(self.space_id)
+            if saved:
+                for fname in saved:
+                    item = QListWidgetItem(fname)
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked)
+                    self.dropbox_file_list.addItem(item)
+                self.dropbox_status.setText(f"{len(saved)} file(s) saved — click Fetch to refresh")
 
+    # ── Dropbox ─────────────────────────────────────────────
+    def _fetch_dropbox_files(self):
+        """List .txt/.py/.md files from Dropbox /local_helper/ and show as checkboxes."""
+        try:
+            import dropbox_sync
+            if not dropbox_sync.is_configured():
+                QMessageBox.warning(
+                    self, "Dropbox not configured",
+                    "Fill in DROPBOX_APP_KEY, DROPBOX_APP_SECRET and DROPBOX_REFRESH_TOKEN in config.py first."
+                )
+                return
+            self.dropbox_status.setText("Fetching...")
+            self.btn_fetch_dropbox.setEnabled(False)
+            self.repaint()
+
+            all_files = dropbox_sync.list_remote_files("/local_helper")
+            # Filter to supported text formats only
+            valid_exts = {".txt", ".py", ".md"}
+            files = [f for f in all_files if os.path.splitext(f)[1].lower() in valid_exts]
+
+            # Remember which were already checked
+            previously_checked = set()
+            for i in range(self.dropbox_file_list.count()):
+                it = self.dropbox_file_list.item(i)
+                if it.checkState() == Qt.Checked:
+                    previously_checked.add(it.text())
+
+            self.dropbox_file_list.clear()
+            for fname in sorted(files):
+                item = QListWidgetItem(fname)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.Checked if fname in previously_checked else Qt.Unchecked
+                )
+                self.dropbox_file_list.addItem(item)
+
+            self.dropbox_status.setText(
+                f"{len(files)} file(s) found" if files else "No .txt/.py/.md files found"
+            )
+        except Exception as e:
+            self.dropbox_status.setText(f"Error: {e}")
+        finally:
+            self.btn_fetch_dropbox.setEnabled(True)
+
+    def _get_checked_dropbox_files(self) -> list:
+        checked = []
+        for i in range(self.dropbox_file_list.count()):
+            it = self.dropbox_file_list.item(i)
+            if it.checkState() == Qt.Checked:
+                checked.append(it.text())
+        return checked
+
+    # ── Local Files ─────────────────────────────────────────
     def _add_file(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Select Files", "",
@@ -126,6 +220,7 @@ class SpaceDialog(QDialog):
             db.remove_space_file(file_id)
         self.file_list.takeItem(self.file_list.row(item))
 
+    # ── Scheduled Tasks ──────────────────────────────────────
     def _add_task(self):
         if not self.space_id:
             QMessageBox.information(self, "Tasks", "Save the agent first before adding tasks.")
@@ -167,9 +262,10 @@ class SpaceDialog(QDialog):
 
     def get_data(self) -> dict:
         return {
-            "name":        self.name_edit.text().strip() or "Unnamed Agent",
+            "name":         self.name_edit.text().strip() or "Unnamed Agent",
             "instructions": self.instructions_edit.toPlainText().strip(),
-            "model":       self.model_combo.currentText(),
-            "github_repo": self.github_repo_edit.text().strip(),
-            "web_search":  self.web_search_check.isChecked(),
+            "model":        self.model_combo.currentText(),
+            "github_repo":  self.github_repo_edit.text().strip(),
+            "web_search":   self.web_search_check.isChecked(),
+            "dropbox_files": self._get_checked_dropbox_files(),
         }
