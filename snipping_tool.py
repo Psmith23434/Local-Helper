@@ -17,7 +17,7 @@ from PIL import Image
 import keyboard
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def pil_to_qpixmap(img: Image.Image) -> QPixmap:
     buf = io.BytesIO()
@@ -63,7 +63,6 @@ class SnipOverlay(QWidget):
 
     def paintEvent(self, _):
         painter = QPainter(self)
-        # Draw the desktop screenshot dimmed
         painter.drawPixmap(self.rect(), self._bg)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
 
@@ -318,18 +317,16 @@ def trigger_snip(parent_widget, send_to_chat_callback):
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
-    """Register Ctrl+Shift+S as a global hotkey to trigger the snip overlay."""
+    """Register Ctrl+Shift+C as a global hotkey to trigger the snip overlay."""
     def _trigger():
-        # Schedule on Qt main thread
         from PyQt5.QtCore import QMetaObject, Qt as _Qt
         QMetaObject.invokeMethod(
             root, "_trigger_snip", _Qt.QueuedConnection
         )
 
-    # Attach the Qt-side slot to the main window
     import types
     def _trigger_snip(self):
         trigger_snip(self, getattr(self, "attach_image", lambda b64, p: None))
 
     root._trigger_snip = types.MethodType(_trigger_snip, root)
-    keyboard.add_hotkey("ctrl+shift+s", _trigger)
+    keyboard.add_hotkey("ctrl+shift+c", _trigger)
