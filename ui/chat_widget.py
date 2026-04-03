@@ -17,7 +17,7 @@ from ui.theme import get as T
 from ui.styles import accent_btn_qss, code_btn_qss
 
 
-# ── Markdown renderer ────────────────────────────────────────────────────────
+# ── Markdown renderer ──────────────────────────────────────────────
 def markdown_to_html(text: str) -> str:
     lines = text.split("\n")
     out = []
@@ -161,7 +161,7 @@ def extract_code_blocks(text: str) -> list[dict]:
     ]
 
 
-# ── Worker ────────────────────────────────────────────────────────────────────
+# ── Worker ────────────────────────────────────────────────────
 class WorkerSignals(QObject):
     chunk = pyqtSignal(str)
     done  = pyqtSignal(str)
@@ -191,7 +191,7 @@ class ChatWorker(QThread):
             self.signals.error.emit(str(e))
 
 
-# ── Chat Widget ───────────────────────────────────────────────────────────────
+# ── Chat Widget ───────────────────────────────────────────────────
 class ChatWidget(QWidget):
     """
     Self-contained chat UI.
@@ -215,6 +215,7 @@ class ChatWidget(QWidget):
         self._last_code_blocks: list[dict] = []
         self._on_thread_renamed = on_thread_renamed
         self._web_search_default = web_search_default
+        self._msg_count        = 0   # messages in current thread
         self._build_ui()
 
     def _build_ui(self):
@@ -239,6 +240,8 @@ class ChatWidget(QWidget):
         self.model_combo.addItems(AVAILABLE_MODELS)
         self.model_combo.setCurrentText(DEFAULT_MODEL)
         self.model_combo.setCursor(Qt.PointingHandCursor)
+        self.model_combo.setToolTip("Switch model — takes effect on the next message")
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
         tl.addWidget(self.model_combo)
         self.web_check = QCheckBox("🔍 Web")
         self.web_check.setChecked(self._web_search_default)
@@ -311,7 +314,7 @@ class ChatWidget(QWidget):
         il.addWidget(self.send_btn)
         root.addWidget(inp)
 
-        # Status
+        # Smart status bar
         self.status_lbl = QLabel("Ready")
         self.status_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;padding:2px 14px 4px;")
         root.addWidget(self.status_lbl)
@@ -323,21 +326,43 @@ class ChatWidget(QWidget):
                 self._send(); return True
         return super().eventFilter(obj, event)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ─────────────────────────────────────────────────
     def load_thread(self, thread_id: int, context_label: str = ""):
         self.current_thread_id = thread_id
         self.context_label.setText(context_label)
         self.display.clear()
         self.code_bar.hide()
         self._last_code_blocks = []
-        for msg in db.get_messages(thread_id):
+        msgs = db.get_messages(thread_id)
+        self._msg_count = len(msgs)
+        for msg in msgs:
             self._render_msg(msg["role"], msg["content"])
-        self._set_status(f"Thread #{thread_id}")
+        self._update_status_idle()
 
     def set_system_prompt(self, prompt: str):
         self.system_prompt = prompt
 
-    # ── Rendering ─────────────────────────────────────────────────────────────
+    # ── Smart status helpers ───────────────────────────────────────────
+    def _update_status_idle(self):
+        """Show useful info when not generating: model + message count + web search state."""
+        model = self.model_combo.currentText()
+        web   = " · 🔍 Web on" if self.web_check.isChecked() else ""
+        count = self._msg_count
+        if count == 0:
+            msg_info = "No messages yet"
+        elif count == 1:
+            msg_info = "1 message"
+        else:
+            msg_info = f"{count} messages"
+        self._set_status(f"🧠 {model}  ·  {msg_info}{web}")
+
+    def _on_model_changed(self, model_name: str):
+        """Flash a hint when the user switches model mid-chat."""
+        if not self._streaming:
+            self._set_status(f"ℹ️ Model switched to {model_name} — takes effect on next message")
+            QTimer.singleShot(3000, self._update_status_idle)
+
+    # ── Rendering ─────────────────────────────────────────────────────
     def _render_msg(self, role: str, content: str):
         d = T()
         if role == "user":
@@ -353,7 +378,7 @@ class ChatWidget(QWidget):
             f'<div style="color:{d["text"]}">{body}</div></div>'
         )
 
-    # ── Send ──────────────────────────────────────────────────────────────────
+    # ── Send ──────────────────────────────────────────────────────────
     def _send(self):
         if not self.current_thread_id:
             self._set_status("⚠ No thread selected.", error=True); return
@@ -365,13 +390,14 @@ class ChatWidget(QWidget):
         self.code_bar.hide()
         self._last_code_blocks = []
         db.add_message(self.current_thread_id, "user", user_text)
+        self._msg_count += 1
         self._render_msg("user", user_text)
 
         system = self.system_prompt
         extra  = ""
 
         if self.web_check.isChecked():
-            self._set_status("Searching the web...")
+            self._set_status("🔍 Searching the web...")
             ctx = search.web_search(user_text)
             if ctx: extra += f"\n\n--- Web Results ---\n{ctx}"
 
@@ -396,7 +422,7 @@ class ChatWidget(QWidget):
             messages.append({"role": m["role"], "content": m["content"]})
 
         model = self.model_combo.currentText()
-        self._set_status(f"Waiting for {model}...")
+        self._set_status(f"⏳ Waiting for {model}...")
         self._stream_buffer  = ""
         self._streaming      = True
         self._stream_started = False
@@ -407,7 +433,7 @@ class ChatWidget(QWidget):
             f'background:{d["bg"]};margin-bottom:1px;">'
             f'<div style="margin-bottom:5px;font-size:11px;color:{d["muted"]};font-weight:700;'
             f'color:{d["ai_color"]}">Assistant</div>'
-            f'<div style="color:{d["muted"]};">●●●</div></div>'
+            f'<div style="color:{d["muted"]};">\u25cf\u25cf\u25cf</div></div>'
         )
 
         self.worker = ChatWorker(messages, model, stream=True)
@@ -428,6 +454,7 @@ class ChatWidget(QWidget):
 
     def _on_done(self, full_reply: str):
         self._streaming = False
+        self._msg_count += 1  # assistant message
         db.add_message(self.current_thread_id, "assistant", full_reply)
         # Re-render cleanly with markdown
         self.display.clear()
@@ -445,25 +472,29 @@ class ChatWidget(QWidget):
             self.code_bar.show()
 
         self.send_btn.setEnabled(True)
-        self._set_status("Ready")
+        self._update_status_idle()
         self.status_changed.emit("Ready")
 
-        # Auto-rename thread
+        # Auto-rename thread — include model name in title
+        model = self.model_combo.currentText()
+        short_model = model.split("/")[-1] if "/" in model else model  # strip provider prefix
+
         if self.space_id:
             threads = db.get_threads(self.space_id)
             t = next((x for x in threads if x["id"] == self.current_thread_id), None)
             if t and t["title"] == "New Thread":
-                title = (full_reply[:42] + "…") if len(full_reply) > 42 else full_reply
+                title = (full_reply[:38] + "…") if len(full_reply) > 38 else full_reply
+                title = f"{title}  [{short_model}]"
                 db.rename_thread(self.current_thread_id, title)
                 if self._on_thread_renamed:
                     self._on_thread_renamed(self.current_thread_id, title)
         else:
-            # General chat auto-rename using user message
-            from database import get_messages, rename_thread, get_threads
-            msgs = get_messages(self.current_thread_id)
+            # General chat: auto-rename using first user message + model
+            msgs = db.get_messages(self.current_thread_id)
             first_user = next((m["content"] for m in msgs if m["role"] == "user"), "")
-            title = (first_user[:42] + "…") if len(first_user) > 42 else first_user
-            rename_thread(self.current_thread_id, title)
+            base = (first_user[:38] + "…") if len(first_user) > 38 else first_user
+            title = f"{base}  [{short_model}]"
+            db.rename_thread(self.current_thread_id, title)
             if self._on_thread_renamed:
                 self._on_thread_renamed(self.current_thread_id, title)
 
@@ -476,9 +507,9 @@ class ChatWidget(QWidget):
             f'<span style="color:#ffaaaa;">{err}</span></div>'
         )
         self.send_btn.setEnabled(True)
-        self._set_status(f"Error: {err}", error=True)
+        self._set_status(f"❌ {err}", error=True)
 
-    # ── Code actions ──────────────────────────────────────────────────────────
+    # ── Code actions ──────────────────────────────────────────────────
     def _first_code(self):
         return self._last_code_blocks[0]["code"] if self._last_code_blocks else ""
 
