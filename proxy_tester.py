@@ -5,8 +5,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QTextEdit, QLineEdit
 )
-from PyQt5.QtCore import QThread, pyqtSignal, QObject
-from openai import OpenAI
+from PyQt5.QtCore import QThread, pyqtSignal
+from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 
 # ─────────────────────────────────────────────
 BASE_URL  = "https://YOUR_PROXY_URL/v1"   # <-- replace
@@ -40,7 +40,7 @@ class TestWorker(QThread):
 
     def run(self):
         try:
-            client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+            client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": TEST_PROMPT}],
@@ -50,15 +50,46 @@ class TestWorker(QThread):
             usage  = response.usage
             tokens = f"in={usage.prompt_tokens} out={usage.completion_tokens} total={usage.total_tokens}"
             self.result.emit(self.model, reply, tokens)
+
+        except APIStatusError as e:
+            # HTTP error returned by the proxy/API (4xx, 5xx)
+            body = ""
+            try:
+                body = e.response.text
+            except Exception:
+                try:
+                    body = str(e.response.json())
+                except Exception:
+                    body = repr(getattr(e, 'body', ''))
+            parts = [f"status={getattr(e, 'status_code', 'unknown')}"]
+            req_id = getattr(e, 'request_id', None)
+            if req_id:
+                parts.append(f"request_id={req_id}")
+            parts.append(f"type={type(e).__name__}")
+            parts.append(f"message={str(e)}")
+            if body:
+                parts.append(f"body={body}")
+            self.result.emit(self.model, "ERROR:\n" + "\n".join(parts), "")
+
+        except RateLimitError as e:
+            self.result.emit(self.model, f"ERROR:\ntype=RateLimitError\nmessage={str(e)}", "")
+
+        except APIConnectionError as e:
+            self.result.emit(
+                self.model,
+                f"ERROR:\ntype={type(e).__name__}\nCould not connect to: {self.base_url}\ndetail={repr(e)}",
+                ""
+            )
+
         except Exception as e:
-            self.result.emit(self.model, f"ERROR: {e}", "")
+            self.result.emit(self.model, f"ERROR:\ntype={type(e).__name__}\ndetail={repr(e)}", "")
 
 
 class ProxyTester(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Proxy Tester")
-        self.resize(640, 480)
+        self.setWindowTitle("Proxy Tester (Debug)")
+        self.resize(760, 540)
         self._workers = []
         self._build_ui()
 
@@ -76,13 +107,13 @@ class ProxyTester(QWidget):
         cfg.addWidget(self.key_input)
         layout.addLayout(cfg)
 
-        # Model selector + test single
+        # Model selector + buttons
         row = QHBoxLayout()
         self.model_combo = QComboBox()
         self.model_combo.addItems(MODELS)
-        self.btn_test_one  = QPushButton("Test Selected")
-        self.btn_test_all  = QPushButton("Test ALL Models")
-        self.btn_clear     = QPushButton("Clear")
+        self.btn_test_one = QPushButton("Test Selected")
+        self.btn_test_all = QPushButton("Test ALL Models")
+        self.btn_clear    = QPushButton("Clear")
         row.addWidget(self.model_combo)
         row.addWidget(self.btn_test_one)
         row.addWidget(self.btn_test_all)
@@ -92,6 +123,7 @@ class ProxyTester(QWidget):
         # Output
         self.output = QTextEdit()
         self.output.setReadOnly(True)
+        self.output.setFontFamily("Courier New")
         layout.addWidget(self.output)
 
         self.btn_test_one.clicked.connect(self._test_one)
@@ -102,8 +134,7 @@ class ProxyTester(QWidget):
         return self.url_input.text().strip(), self.key_input.text().strip()
 
     def _test_one(self):
-        model = self.model_combo.currentText()
-        self._run(model)
+        self._run(self.model_combo.currentText())
 
     def _test_all(self):
         for model in MODELS:
@@ -111,7 +142,7 @@ class ProxyTester(QWidget):
 
     def _run(self, model):
         base_url, api_key = self._get_config()
-        self.output.append(f'<span style="color:#888">⏳ Testing <b>{model}</b>...</span>')
+        self.output.append(f'<span style="color:#888">⏳ Testing <b>{model}</b> → {base_url}</span>')
         worker = TestWorker(model, base_url, api_key)
         worker.result.connect(self._on_result)
         worker.start()
@@ -125,9 +156,11 @@ class ProxyTester(QWidget):
             color = "#2d6a4f"
             icon  = "✅"
         token_info = f' <span style="color:#999">({tokens})</span>' if tokens else ""
+        safe_reply = reply.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.output.append(
             f'{icon} <b>{model}</b>{token_info}<br>'
-            f'<span style="color:{color}">{reply}</span><br>'
+            f'<span style="color:{color}; white-space:pre-wrap; font-family:Courier New">'
+            f'{safe_reply}</span><br>'
         )
 
 
