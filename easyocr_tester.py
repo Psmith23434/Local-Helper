@@ -1,5 +1,21 @@
 import sys
 import os
+
+# ── CRITICAL: Pre-load torch c10.dll BEFORE PyQt5 imports ──────────────────────────
+# PyTorch 2.9+ on Windows crashes with [WinError 1114] if PyQt is imported first.
+# Fix: https://github.com/pytorch/pytorch/issues/166628
+import platform
+if platform.system() == "Windows":
+    import ctypes
+    from importlib.util import find_spec
+    try:
+        if (spec := find_spec("torch")) and spec.origin and os.path.exists(
+            dll_path := os.path.join(os.path.dirname(spec.origin), "lib", "c10.dll")
+        ):
+            ctypes.CDLL(os.path.normpath(dll_path))
+    except Exception:
+        pass
+
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -73,10 +89,8 @@ QProgressBar::chunk { background-color: #6c3fc5; border-radius: 4px; }
 """
 
 # ── Language definitions ──────────────────────────────────────────────────────────────
-# EasyOCR restriction: Cyrillic must be isolated from Latin in its own reader.
-# "Auto" covers the most common mix (EN+DE).
 LANGS = [
-    ("Auto",  ["en", "de"]),          # default: English + German
+    ("Auto",  ["en", "de"]),
     ("EN",    ["en"]),
     ("DE",    ["de"]),
     ("FR",    ["fr"]),
@@ -87,7 +101,7 @@ LANGS = [
     ("PL",    ["pl"]),
     ("CS",    ["cs"]),
     ("SV",    ["sv"]),
-    ("RU ⚠",  ["ru", "en"]),          # Cyrillic — isolated reader, includes EN
+    ("RU ⚠",  ["ru", "en"]),  # Cyrillic — isolated reader
 ]
 
 # ── OCR worker thread ─────────────────────────────────────────────────────
@@ -226,7 +240,7 @@ class EasyOCRTester(QWidget):
                 name = torch.cuda.get_device_name(0)
                 self.gpu_check.setText(f"Use GPU  —  {name}")
                 self.gpu_check.setEnabled(True)
-                self.gpu_check.setChecked(True)   # default ON when GPU available
+                self.gpu_check.setChecked(True)
                 self.gpu_check.setStyleSheet(
                     "color:#6daa45;font-size:12px;spacing:6px;"
                     "QCheckBox::indicator{width:16px;height:16px;border:1px solid #555;"
@@ -252,7 +266,6 @@ class EasyOCRTester(QWidget):
         hint.setObjectName("hint")
         root.addWidget(hint)
 
-        # Drop zone card
         drop_card = QFrame(); drop_card.setObjectName("card")
         dc_lay = QVBoxLayout(drop_card); dc_lay.setContentsMargins(12, 12, 12, 12)
         self.drop_zone = DropLabel()
@@ -270,24 +283,20 @@ class EasyOCRTester(QWidget):
         dc_lay.addLayout(browse_row)
         root.addWidget(drop_card)
 
-        # Language bar
         self.lang_bar = LangBar()
         root.addWidget(self.lang_bar)
 
-        # GPU checkbox
         self.gpu_check = QCheckBox("Use GPU  —  detecting...")
         self.gpu_check.setChecked(False)
         self.gpu_check.setEnabled(False)
         root.addWidget(self.gpu_check)
 
-        # Run button
         self.run_btn = QPushButton("⚡  Extract Text")
         self.run_btn.setObjectName("primary")
         self.run_btn.setFixedHeight(40)
         self.run_btn.clicked.connect(self._run_ocr)
         root.addWidget(self.run_btn)
 
-        # Progress + status
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
@@ -296,7 +305,6 @@ class EasyOCRTester(QWidget):
         self.status_lbl.setObjectName("status")
         root.addWidget(self.status_lbl)
 
-        # Result card
         result_card = QFrame(); result_card.setObjectName("card")
         rc_lay = QVBoxLayout(result_card)
         rc_lay.setContentsMargins(12, 12, 12, 12)
