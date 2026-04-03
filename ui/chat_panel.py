@@ -34,10 +34,10 @@ class ChatWorker(QThread):
         try:
             if self.stream:
                 full = ""
+                # ai_client now yields plain str chunks
                 for chunk in ai_client.chat(self.messages, self.model, stream=True):
-                    delta = chunk.choices[0].delta.content or ""
-                    full += delta
-                    self.signals.chunk.emit(delta)
+                    full += chunk
+                    self.signals.chunk.emit(chunk)
                 self.signals.done.emit(full)
             else:
                 reply = ai_client.chat(self.messages, self.model, stream=False)
@@ -52,6 +52,7 @@ class ChatPanel(QWidget):
         self.current_thread_id = None
         self.current_space_id  = None
         self.space_data        = None
+        self._stream_buffer    = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -91,9 +92,13 @@ class ChatPanel(QWidget):
         input_row.addWidget(self.send_btn)
         layout.addLayout(input_row)
 
+        # Status label
+        self.status_label = QLabel("Select or create a Space and Thread to start chatting.")
+        self.status_label.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.status_label)
+
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
-        from PyQt5.QtGui import QKeyEvent
         if obj is self.input_box and event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Return and event.modifiers() == Qt.ControlModifier:
                 self._send()
@@ -112,6 +117,7 @@ class ChatPanel(QWidget):
 
     def load_thread(self, thread_id: int):
         self.current_thread_id = thread_id
+        self.status_label.setText(f"Thread #{thread_id} active")
         self.chat_display.clear()
         for msg in db.get_messages(thread_id):
             self._append_message(msg["role"], msg["content"])
@@ -124,14 +130,20 @@ class ChatPanel(QWidget):
         )
 
     def _send(self):
+        # Guard: need a thread selected
         if not self.current_thread_id:
+            self.status_label.setText("⚠️ Please select a Space and Thread from the sidebar first.")
+            self.status_label.setStyleSheet("color: #cc0000; font-size: 11px;")
             return
+
         user_text = self.input_box.toPlainText().strip()
         if not user_text:
             return
 
         self.input_box.clear()
         self.send_btn.setEnabled(False)
+        self.status_label.setText("Sending...")
+        self.status_label.setStyleSheet("color: #888; font-size: 11px;")
         db.add_message(self.current_thread_id, "user", user_text)
         self._append_message("user", user_text)
 
@@ -144,7 +156,7 @@ class ChatPanel(QWidget):
 
         # Web search context
         if self.web_search_check.isChecked():
-            self.window().set_status("Searching the web...")
+            self._set_status("Searching the web...")
             web_ctx = search.web_search(user_text)
             if web_ctx:
                 extra_context += f"\n\n--- Web Search Results ---\n{web_ctx}"
@@ -156,17 +168,16 @@ class ChatPanel(QWidget):
                 paths = [f["filepath"] for f in files]
                 extra_context += "\n\n--- Attached Files ---\n" + file_context.build_file_context(paths)
 
-            # GitHub context (repo file listing injected as reference)
+            # GitHub context
             repo = self.space_data.get("github_repo", "")
             if repo:
                 gh_files = github_context.list_repo_files(repo)
                 if gh_files:
-                    file_tree = "\n".join(gh_files[:50])  # limit to 50 files
+                    file_tree = "\n".join(gh_files[:50])
                     extra_context += f"\n\n--- GitHub Repo: {repo} ---\nFiles:\n{file_tree}"
 
         if extra_context:
             system = (system + "\n\n--- Context ---" + extra_context).strip()
-
         if not system:
             system = "You are a helpful assistant."
 
@@ -177,7 +188,7 @@ class ChatPanel(QWidget):
             messages.append({"role": m["role"], "content": m["content"]})
 
         model = self.model_combo.currentText()
-        self.window().set_status(f"Waiting for {model}...")
+        self._set_status(f"Waiting for {model}...")
 
         # Placeholder for streaming reply
         self.chat_display.append('<b style="color:#2d6a4f">Assistant:</b><br>')
@@ -188,6 +199,13 @@ class ChatPanel(QWidget):
         self.worker.signals.done.connect(self._on_done)
         self.worker.signals.error.connect(self._on_error)
         self.worker.start()
+
+    def _set_status(self, text: str):
+        self.status_label.setText(text)
+        try:
+            self.window().set_status(text)
+        except Exception:
+            pass
 
     def _on_chunk(self, delta: str):
         self._stream_buffer += delta
@@ -201,16 +219,16 @@ class ChatPanel(QWidget):
         self.chat_display.append("<br>")
         db.add_message(self.current_thread_id, "assistant", full_reply)
         self.send_btn.setEnabled(True)
-        self.window().set_status("Ready")
+        self._set_status("Ready")
         # Auto-rename thread on first reply
         threads = db.get_threads(self.current_space_id)
         current = next((t for t in threads if t["id"] == self.current_thread_id), None)
         if current and current["title"] == "New Thread":
-            first_msg = self.input_box.toPlainText() or full_reply
             new_title = (full_reply[:40] + "...") if len(full_reply) > 40 else full_reply
             db.rename_thread(self.current_thread_id, new_title)
 
     def _on_error(self, error_msg: str):
         self.chat_display.append(f'<b style="color:red">Error: {error_msg}</b><br>')
         self.send_btn.setEnabled(True)
-        self.window().set_status("Error")
+        self._set_status("Error")
+        self.status_label.setStyleSheet("color: #cc0000; font-size: 11px;")
