@@ -1,18 +1,10 @@
-"""Main application window — tabbed layout with menu bar."""
+"""Main application window — thin shell that loads a layout class."""
 
-from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QTabWidget, QStatusBar,
-    QMenuBar, QAction, QMessageBox, QApplication
-)
+from PyQt5.QtWidgets import QMainWindow, QStatusBar, QMessageBox, QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QFont
 from ui.theme import get as T, set_theme
 from ui.styles import global_qss
-from ui.tab_general  import GeneralChatTab
-from ui.tab_agents   import AgentsTab
-from ui.tab_discover import DiscoverTab
-from ui.tab_tips     import TipsTab
-from ui.tab_settings import SettingsTab
 
 
 def apply_dark_palette(widget):
@@ -32,113 +24,76 @@ def apply_dark_palette(widget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, layout: str = "Tabbed"):
         super().__init__()
         self.setWindowTitle("Local Helper")
         self.resize(1320, 860)
+        self._layout_name = layout
         self._apply_style()
-        self._build_menu()
-        self._build_ui()
+        self._load_layout(layout)
+        self._build_statusbar()
 
     def _apply_style(self):
         apply_dark_palette(self)
         self.setStyleSheet(global_qss())
         self.setFont(QFont("Segoe UI", 10))
 
-    # ── Menu bar ──────────────────────────────────────────────────────────────
-    def _build_menu(self):
-        mb = self.menuBar()
+    def _load_layout(self, layout_name: str):
+        if layout_name == "Sidebar":
+            from ui.layout_sidebar import SidebarLayout
+            self._layout_widget = SidebarLayout(self)
+        else:
+            from ui.layout_tabbed import TabbedLayout
+            self._layout_widget = TabbedLayout(self)
+        self.setCentralWidget(self._layout_widget)
 
-        # File
-        file_menu = mb.addMenu("File")
-        act_new_chat = QAction("New Chat", self)
-        act_new_chat.setShortcut("Ctrl+N")
-        act_new_chat.triggered.connect(lambda: self._tabs.setCurrentIndex(0))
-        file_menu.addAction(act_new_chat)
-
-        act_new_agent = QAction("New Agent", self)
-        act_new_agent.triggered.connect(lambda: self._tabs.setCurrentIndex(1))
-        file_menu.addAction(act_new_agent)
-        file_menu.addSeparator()
-
-        act_quit = QAction("Quit", self)
-        act_quit.setShortcut("Ctrl+Q")
-        act_quit.triggered.connect(QApplication.instance().quit)
-        file_menu.addAction(act_quit)
-
-        # View
-        view_menu = mb.addMenu("View")
-        for i, label in enumerate(["General Chat", "Agents", "Discover", "Tips", "Settings"]):
-            a = QAction(label, self)
-            idx = i
-            a.triggered.connect(lambda checked, x=idx: self._tabs.setCurrentIndex(x))
-            view_menu.addAction(a)
-        view_menu.addSeparator()
-
-        act_dark = QAction("Theme: Dark", self)
-        act_dark.triggered.connect(lambda: self._switch_theme("Dark"))
-        view_menu.addAction(act_dark)
-
-        act_vsc = QAction("Theme: VS Code", self)
-        act_vsc.triggered.connect(lambda: self._switch_theme("VS Code"))
-        view_menu.addAction(act_vsc)
-
-        # Help
-        help_menu = mb.addMenu("Help")
-        act_tips = QAction("Tips & Examples", self)
-        act_tips.triggered.connect(lambda: self._tabs.setCurrentIndex(3))
-        help_menu.addAction(act_tips)
-
-        act_discover = QAction("Discover Features", self)
-        act_discover.triggered.connect(lambda: self._tabs.setCurrentIndex(2))
-        help_menu.addAction(act_discover)
-        help_menu.addSeparator()
-
-        act_about = QAction("About Local Helper", self)
-        act_about.triggered.connect(self._show_about)
-        help_menu.addAction(act_about)
-
-    # ── Tabs ──────────────────────────────────────────────────────────────────
-    def _build_ui(self):
-        self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
-        self.setCentralWidget(self._tabs)
-
-        self.tab_general  = GeneralChatTab()
-        self.tab_agents   = AgentsTab()
-        self.tab_discover = DiscoverTab()
-        self.tab_tips     = TipsTab()
-        self.tab_settings = SettingsTab()
-
-        self._tabs.addTab(self.tab_general,  "💬  General Chat")
-        self._tabs.addTab(self.tab_agents,   "🤖  Agents")
-        self._tabs.addTab(self.tab_discover, "🔭  Discover")
-        self._tabs.addTab(self.tab_tips,     "💡  Tips")
-        self._tabs.addTab(self.tab_settings, "⚙️  Settings")
-
-        # Status bar
+    def _build_statusbar(self):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status.showMessage("Ready")
+        layout_label = "📌 Sidebar" if self._layout_name == "Sidebar" else "📌 Tabbed"
+        self.status.showMessage(f"Ready  ·  {layout_label}")
 
-        # Wire up theme change from settings tab
-        self.tab_settings.theme_changed.connect(self._reapply_theme)
-
+    # ── Public API used by layout widgets ─────────────────────────────
     def set_status(self, msg: str):
         self.status.showMessage(msg)
 
-    def _switch_theme(self, name: str):
+    def switch_theme(self, name: str):
         set_theme(name)
-        self._reapply_theme()
+        self.reapply_theme()
 
-    def _reapply_theme(self):
+    def reapply_theme(self):
         self._apply_style()
-        # Rebuild tabs to pick up new theme colors
-        # Simple approach: just re-apply QSS; widgets with hardcoded colors need rebuild
         self.setStyleSheet(global_qss())
         apply_dark_palette(self)
 
-    def _show_about(self):
+    def on_layout_change_requested(self, new_layout: str):
+        """Called by SettingsTab when user picks a different layout."""
+        if new_layout == self._layout_name:
+            return
+        from PyQt5.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Restart required",
+            f"Switch to {new_layout} layout?\n\nThe app will close. Please relaunch it.",
+            QMessageBox.Ok | QMessageBox.Cancel
+        )
+        if reply == QMessageBox.Ok:
+            # Save to config.py
+            try:
+                with open("config.py", "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                with open("config.py", "w", encoding="utf-8") as f:
+                    for line in lines:
+                        if line.strip().startswith("GUI_LAYOUT"):
+                            f.write(f'GUI_LAYOUT = "{new_layout}"\n')
+                        else:
+                            f.write(line)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not save layout:\n{e}")
+                return
+            QApplication.instance().quit()
+
+    def show_about(self):
         QMessageBox.about(
             self,
             "About Local Helper",

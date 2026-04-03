@@ -22,7 +22,13 @@ def main():
     app.setFont(QFont("Segoe UI", 10))
     apply_dark_palette(app)
 
-    window = MainWindow()
+    # Read layout preference from config
+    try:
+        from config import GUI_LAYOUT
+    except ImportError:
+        GUI_LAYOUT = "Tabbed"
+
+    window = MainWindow(layout=GUI_LAYOUT)
     window.show()
 
     exit_code = app.exec_()

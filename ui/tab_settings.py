@@ -1,4 +1,4 @@
-"""Settings tab — theme, font size, API config, clear history."""
+"""Settings tab — theme, font size, layout, API config, clear history."""
 
 import sys
 from PyQt5.QtWidgets import (
@@ -14,8 +14,8 @@ from ui.styles import accent_btn_qss
 
 
 class SettingsTab(QWidget):
-    theme_changed  = pyqtSignal()   # tell main window to re-apply QSS
-    restart_needed = pyqtSignal()   # optional: prompt user to restart
+    theme_changed  = pyqtSignal()         # tell main window to re-apply QSS
+    layout_changed = pyqtSignal(str)      # emits new layout name e.g. "Sidebar"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,7 +42,7 @@ class SettingsTab(QWidget):
         h.setStyleSheet(f"color:{d['text']};")
         cl.addWidget(h)
 
-        # ── Appearance ────────────────────────────────────────────────────────
+        # ── Appearance ───────────────────────────────────────────────
         grp_appear = self._group("Appearance")
         gl = QVBoxLayout(grp_appear)
         gl.setSpacing(10)
@@ -84,38 +84,53 @@ class SettingsTab(QWidget):
         row2.addWidget(btn_apply_font)
         gl.addLayout(row2)
 
+        # Layout switcher
+        row3 = QHBoxLayout()
+        row3.addWidget(self._lbl("Layout"))
+        self.layout_combo = QComboBox()
+        self.layout_combo.addItems(["Tabbed", "Sidebar"])
+        try:
+            from config import GUI_LAYOUT
+            self.layout_combo.setCurrentText(GUI_LAYOUT)
+        except Exception:
+            self.layout_combo.setCurrentText("Tabbed")
+        self.layout_combo.setFixedWidth(180)
+        row3.addWidget(self.layout_combo)
+        row3.addStretch()
+        btn_apply_layout = QPushButton("Apply")
+        btn_apply_layout.setFixedWidth(80)
+        btn_apply_layout.setToolTip("Saves to config.py and closes the app — relaunch to apply")
+        btn_apply_layout.clicked.connect(self._apply_layout)
+        row3.addWidget(btn_apply_layout)
+        gl.addLayout(row3)
+
         cl.addWidget(grp_appear)
 
-        # ── API / Proxy ───────────────────────────────────────────────────────
+        # ── API / Proxy ─────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
-
         al.addWidget(self._lbl("Base URL"))
         self.api_url = QLineEdit()
         self._load_config_value("BASE_URL", self.api_url)
         al.addWidget(self.api_url)
-
         al.addWidget(self._lbl("API Key"))
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self._load_config_value("API_KEY", self.api_key)
         al.addWidget(self.api_key)
-
         al.addWidget(self._lbl("Default Model"))
         self.default_model = QLineEdit()
         self._load_config_value("DEFAULT_MODEL", self.default_model)
         al.addWidget(self.default_model)
-
         btn_save_api = QPushButton("Save to config.py")
         btn_save_api.setStyleSheet(accent_btn_qss())
         btn_save_api.setFixedWidth(160)
         btn_save_api.clicked.connect(self._save_api)
         al.addWidget(btn_save_api)
-
         cl.addWidget(grp_api)
 
-        # ── GitHub ────────────────────────────────────────────────────────────
+        # ── GitHub ───────────────────────────────────────────────
         grp_gh = self._group("GitHub")
         ghl = QVBoxLayout(grp_gh)
         ghl.setSpacing(10)
@@ -131,7 +146,7 @@ class SettingsTab(QWidget):
         ghl.addWidget(btn_save_gh)
         cl.addWidget(grp_gh)
 
-        # ── Web Search ────────────────────────────────────────────────────────
+        # ── Web Search ───────────────────────────────────────────
         grp_ws = self._group("Web Search")
         wl = QVBoxLayout(grp_ws)
         wl.setSpacing(10)
@@ -147,7 +162,7 @@ class SettingsTab(QWidget):
         wl.addWidget(btn_save_ws)
         cl.addWidget(grp_ws)
 
-        # ── Danger zone ───────────────────────────────────────────────────────
+        # ── Danger zone ───────────────────────────────────────────
         grp_danger = self._group("Danger Zone")
         grp_danger.setStyleSheet(
             f"QGroupBox{{border:1px solid {d['red']};border-radius:8px;"
@@ -172,9 +187,8 @@ class SettingsTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────
     def _group(self, title: str) -> QGroupBox:
-        from PyQt5.QtWidgets import QGroupBox
         g = QGroupBox(title)
         return g
 
@@ -199,7 +213,6 @@ class SettingsTab(QWidget):
             return default
 
     def _write_config(self, updates: dict):
-        """Patch config.py in-place by replacing matching lines."""
         try:
             with open("config.py", "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -232,6 +245,9 @@ class SettingsTab(QWidget):
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         QApplication.instance().setFont(QFont("Segoe UI", size))
+
+    def _apply_layout(self):
+        self.layout_changed.emit(self.layout_combo.currentText())
 
     def _save_api(self):
         ok = self._write_config({
