@@ -61,9 +61,7 @@ QCheckBox::indicator {
     border: 1px solid #555; border-radius: 4px;
     background: #2a2a2a;
 }
-QCheckBox::indicator:checked {
-    background: #6c3fc5; border-color: #6c3fc5;
-}
+QCheckBox::indicator:checked { background: #6c3fc5; border-color: #6c3fc5; }
 QLabel#status { color: #888; font-size: 11px; }
 QLabel#title_lbl { color: #e0e0e0; font-size: 15px; font-weight: 600; }
 QLabel#hint { color: #555; font-size: 11px; }
@@ -73,6 +71,24 @@ QProgressBar {
 }
 QProgressBar::chunk { background-color: #6c3fc5; border-radius: 4px; }
 """
+
+# ── Language definitions ──────────────────────────────────────────────────────────────
+# EasyOCR restriction: Cyrillic must be isolated from Latin in its own reader.
+# "Auto" covers the most common mix (EN+DE).
+LANGS = [
+    ("Auto",  ["en", "de"]),          # default: English + German
+    ("EN",    ["en"]),
+    ("DE",    ["de"]),
+    ("FR",    ["fr"]),
+    ("ES",    ["es"]),
+    ("IT",    ["it"]),
+    ("NL",    ["nl"]),
+    ("PT",    ["pt"]),
+    ("PL",    ["pl"]),
+    ("CS",    ["cs"]),
+    ("SV",    ["sv"]),
+    ("RU ⚠",  ["ru", "en"]),          # Cyrillic — isolated reader, includes EN
+]
 
 # ── OCR worker thread ─────────────────────────────────────────────────────
 
@@ -152,30 +168,30 @@ class DropLabel(QLabel):
 
 # ── Language bar ───────────────────────────────────────────────────────────────────
 
-LANGS = [("Auto", ["en", "de"]), ("EN", ["en"]), ("DE", ["de"]),
-         ("FR", ["fr"]), ("ES", ["es"]), ("ZH", ["ch_sim"])]
-
 class LangBar(QWidget):
     def __init__(self):
         super().__init__()
         self._selected = ["en", "de"]
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(5)
+        lay.setSpacing(4)
         lbl = QLabel("Language:")
-        lbl.setStyleSheet("color:#888;font-size:11px;")
+        lbl.setStyleSheet("color:#888;font-size:11px;min-width:62px;")
         lay.addWidget(lbl)
         self._btns = {}
         for label, codes in LANGS:
             b = QPushButton(label)
             b.setCheckable(True)
             b.setChecked(label == "Auto")
-            b.setFixedHeight(26)
+            b.setFixedHeight(24)
+            ru = label.startswith("RU")
             b.setStyleSheet(
-                "QPushButton{background:#2a2a2a;color:#888;border:1px solid #333;"
-                "border-radius:5px;font-size:11px;padding:0 9px;}"
-                "QPushButton:checked{background:#6c3fc5;color:#fff;border-color:#6c3fc5;}"
-                "QPushButton:hover{background:#333;color:#e0e0e0;}"
+                f"QPushButton{{background:#2a2a2a;color:{'#c07040' if ru else '#888'};"
+                f"border:1px solid {'#5a3a20' if ru else '#333'};"
+                f"border-radius:5px;font-size:10px;padding:0 7px;}}"
+                f"QPushButton:checked{{background:{'#9a5020' if ru else '#6c3fc5'};"
+                f"color:#fff;border-color:{'#9a5020' if ru else '#6c3fc5'};}}"
+                f"QPushButton:hover{{background:#333;color:#e0e0e0;}}"
             )
             b.clicked.connect(lambda _, c=codes, btn=b: self._pick(c, btn))
             lay.addWidget(b)
@@ -197,24 +213,26 @@ class EasyOCRTester(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EasyOCR Tester")
-        self.setMinimumSize(520, 660)
+        self.setMinimumSize(560, 660)
         self._image_path = None
         self._worker = None
         self._build_ui()
         self._detect_gpu()
 
     def _detect_gpu(self):
-        """Check if CUDA is available and update the GPU checkbox label."""
         try:
             import torch
             if torch.cuda.is_available():
                 name = torch.cuda.get_device_name(0)
                 self.gpu_check.setText(f"Use GPU  —  {name}")
                 self.gpu_check.setEnabled(True)
-                self.gpu_check.setStyleSheet("color:#6daa45;font-size:12px;spacing:6px;"
+                self.gpu_check.setChecked(True)   # default ON when GPU available
+                self.gpu_check.setStyleSheet(
+                    "color:#6daa45;font-size:12px;spacing:6px;"
                     "QCheckBox::indicator{width:16px;height:16px;border:1px solid #555;"
                     "border-radius:4px;background:#2a2a2a;}"
-                    "QCheckBox::indicator:checked{background:#6c3fc5;border-color:#6c3fc5;}")
+                    "QCheckBox::indicator:checked{background:#6c3fc5;border-color:#6c3fc5;}"
+                )
             else:
                 self.gpu_check.setText("Use GPU  —  not available (CUDA not found)")
                 self.gpu_check.setEnabled(False)
@@ -230,7 +248,7 @@ class EasyOCRTester(QWidget):
         title = QLabel("EasyOCR Tester")
         title.setObjectName("title_lbl")
         root.addWidget(title)
-        hint = QLabel("Test EasyOCR on any image — drop, browse, or use Browse button")
+        hint = QLabel("Test EasyOCR on any image — drop an image or use Browse")
         hint.setObjectName("hint")
         root.addWidget(hint)
 
@@ -252,11 +270,9 @@ class EasyOCRTester(QWidget):
         dc_lay.addLayout(browse_row)
         root.addWidget(drop_card)
 
-        # Options row
-        opts_row = QHBoxLayout()
+        # Language bar
         self.lang_bar = LangBar()
-        opts_row.addWidget(self.lang_bar, stretch=1)
-        root.addLayout(opts_row)
+        root.addWidget(self.lang_bar)
 
         # GPU checkbox
         self.gpu_check = QCheckBox("Use GPU  —  detecting...")
