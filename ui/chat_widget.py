@@ -347,7 +347,7 @@ class ChatWidget(QWidget):
         self.snip_btn = QPushButton("✂️")
         self.snip_btn.setFixedSize(36, 36)
         self.snip_btn.setCursor(Qt.PointingHandCursor)
-        self.snip_btn.setToolTip("Snipping Tool (Ctrl+Shift+C)")
+        self.snip_btn.setToolTip("Snipping Tool (Ctrl+Shift+X)")
         self.snip_btn.setStyleSheet(_btn_style)
         self.snip_btn.clicked.connect(self._trigger_snip)
         il.addWidget(self.snip_btn, alignment=Qt.AlignBottom)
@@ -387,9 +387,13 @@ class ChatWidget(QWidget):
 
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
-        if obj is self.input_box and event.type() == QEvent.KeyPress:
-            if event.key() == Qt.Key_Return and event.modifiers() == Qt.ControlModifier:
-                self._send(); return True
+        try:
+            if obj is self.input_box and event.type() == QEvent.KeyPress:
+                if event.key() == Qt.Key_Return and event.modifiers() == Qt.ControlModifier:
+                    self._send()
+                    return True
+        except Exception:
+            pass
         return super().eventFilter(obj, event)
 
     # ── Snip / image ───────────────────────────────────────────
@@ -420,9 +424,8 @@ class ChatWidget(QWidget):
         pix = QPixmap.fromImage(qimg)
         self.img_preview_lbl.setPixmap(pix)
         self.img_bar.show()
-        if prompt:
-            if not self.input_box.toPlainText().strip():
-                self.input_box.setPlainText(prompt)
+        if prompt and not self.input_box.toPlainText().strip():
+            self.input_box.setPlainText(prompt)
 
     def _clear_pending_image(self):
         self._pending_image_b64 = None

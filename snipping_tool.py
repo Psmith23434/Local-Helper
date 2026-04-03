@@ -14,6 +14,9 @@ from PyQt5.QtGui import QPixmap, QPainter, QColor, QCursor, QImage
 from PIL import Image
 import keyboard
 
+# Keep a module-level reference so the overlay is never garbage-collected
+_active_overlay = None
+
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -67,6 +70,7 @@ class SnipOverlay(QWidget):
         if event.key() == Qt.Key_Escape:
             self._rubber.hide()
             self.close()
+            _clear_overlay()
 
     def mousePressEvent(self, event):
         self._origin = event.pos()
@@ -82,6 +86,7 @@ class SnipOverlay(QWidget):
         rect = QRect(self._origin, event.pos()).normalized()
         self._rubber.hide()
         self.close()
+        _clear_overlay()
         QApplication.processEvents()
 
         if rect.width() < 5 or rect.height() < 5:
@@ -94,6 +99,11 @@ class SnipOverlay(QWidget):
         ptr.setsize(qimg.byteCount())
         pil = Image.frombytes("RGBA", (w, h), bytes(ptr), "raw", "BGRA")
         self.snipped.emit(pil)
+
+
+def _clear_overlay():
+    global _active_overlay
+    _active_overlay = None
 
 
 # ── Snip toolbar / result window ───────────────────────────────────────────
@@ -290,24 +300,34 @@ class SnipToolbar(QDialog):
 # ── Public API ────────────────────────────────────────────────────────────
 
 def trigger_snip(parent_widget, send_to_chat_callback):
-    """Launch the snip overlay. Safe to call from the Qt main thread."""
-    overlay = SnipOverlay()
+    """Launch the snip overlay. Must be called from the Qt main thread."""
+    global _active_overlay
+
+    # Prevent double-open
+    if _active_overlay is not None:
+        return
+
+    _active_overlay = SnipOverlay()
 
     def on_snipped(image: Image.Image):
         toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
         toolbar.exec_()
 
-    overlay.snipped.connect(on_snipped)
+    _active_overlay.snipped.connect(on_snipped)
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
     """
-    Register Ctrl+Shift+C as a global hotkey.
-    Uses a QTimer.singleShot to safely dispatch to the Qt main thread,
-    avoiding the QMetaObject.invokeMethod pitfall with non-Qt slots.
+    Register Ctrl+Shift+X as a global hotkey.
+    Uses QTimer.singleShot to safely schedule on the Qt main thread
+    from the keyboard listener background thread.
+    Note: Ctrl+C is avoided because Python treats it as KeyboardInterrupt.
     """
     def _on_hotkey():
-        # This runs in the keyboard listener thread — schedule on Qt main thread
-        QTimer.singleShot(0, lambda: trigger_snip(root, send_to_chat_callback))
+        try:
+            QTimer.singleShot(0, lambda: trigger_snip(root, send_to_chat_callback))
+        except Exception as e:
+            print(f"[Snip] Hotkey dispatch error: {e}")
 
-    keyboard.add_hotkey("ctrl+shift+c", _on_hotkey)
+    keyboard.add_hotkey("ctrl+shift+x", _on_hotkey)
+    print("[Snip] Hotkey registered: Ctrl+Shift+X")

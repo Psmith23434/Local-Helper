@@ -31,7 +31,8 @@ def main():
     window = MainWindow(layout=GUI_LAYOUT)
     window.show()
 
-    # Register global snipping tool hotkey (Ctrl+Shift+C)
+    # Register global snipping tool hotkey (Ctrl+Shift+X)
+    # Note: Ctrl+C is intentionally avoided — Python intercepts it as KeyboardInterrupt.
     register_snip_hotkey(
         root=window,
         send_to_chat_callback=getattr(window, "attach_image", lambda b64, prompt: None)
