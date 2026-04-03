@@ -40,7 +40,7 @@ def main():
         send_to_chat_callback=getattr(window, "attach_image", lambda b64, prompt: None)
     )
 
-    exit_code = app.exec_(())
+    exit_code = app.exec_()
     scheduler.stop()
     sys.exit(exit_code)
 
