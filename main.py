@@ -23,7 +23,6 @@ def main():
     app.setFont(QFont("Segoe UI", 10))
     apply_dark_palette(app)
 
-    # Read layout preference from config
     try:
         from config import GUI_LAYOUT
     except ImportError:
@@ -32,9 +31,7 @@ def main():
     window = MainWindow(layout=GUI_LAYOUT)
     window.show()
 
-    # Register global snipping tool hotkey (Ctrl+Shift+S)
-    # Passes the window's attach_image method as the send-to-chat callback.
-    # If MainWindow does not yet expose attach_image, wire it up there.
+    # Register global snipping tool hotkey (Ctrl+Shift+C)
     register_snip_hotkey(
         root=window,
         send_to_chat_callback=getattr(window, "attach_image", lambda b64, prompt: None)

@@ -211,7 +211,7 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self.space_id          = space_id
         self.system_prompt     = system_prompt
-        self._dropbox_context  = ""   # injected between instructions and user message
+        self._dropbox_context  = ""
         self.current_thread_id = None
         self._stream_buffer    = ""
         self._streaming        = False
@@ -220,7 +220,7 @@ class ChatWidget(QWidget):
         self._on_thread_renamed = on_thread_renamed
         self._web_search_default = web_search_default
         self._msg_count        = 0
-        self._pending_image_b64: str | None = None  # base64 image staged for next send
+        self._pending_image_b64: str | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -241,7 +241,6 @@ class ChatWidget(QWidget):
         tl.addWidget(self.context_label)
         tl.addStretch()
 
-        # Re-sync Dropbox button
         self.btn_resync = QPushButton("☁️ Re-sync")
         self.btn_resync.setFixedHeight(26)
         self.btn_resync.setFixedWidth(90)
@@ -286,9 +285,7 @@ class ChatWidget(QWidget):
 
         # Code action bar
         self.code_bar = QWidget()
-        self.code_bar.setStyleSheet(
-            f"background:{d['surface']};border-top:1px solid {d['border']};"
-        )
+        self.code_bar.setStyleSheet(f"background:{d['surface']};border-top:1px solid {d['border']};")
         cbl = QHBoxLayout(self.code_bar)
         cbl.setContentsMargins(10, 4, 10, 4)
         cbl.setSpacing(6)
@@ -309,11 +306,9 @@ class ChatWidget(QWidget):
         self.code_bar.hide()
         root.addWidget(self.code_bar)
 
-        # Image preview bar (shown when a snip is staged)
+        # Image preview bar
         self.img_bar = QWidget()
-        self.img_bar.setStyleSheet(
-            f"background:{d['surface']};border-top:1px solid {d['border']};"
-        )
+        self.img_bar.setStyleSheet(f"background:{d['surface']};border-top:1px solid {d['border']};")
         ibl = QHBoxLayout(self.img_bar)
         ibl.setContentsMargins(10, 4, 10, 4)
         ibl.setSpacing(8)
@@ -326,8 +321,7 @@ class ChatWidget(QWidget):
         ibl.addStretch()
         btn_clear_img = QPushButton("✕ Remove")
         btn_clear_img.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{d['muted']};"
-            f"border:none;font-size:11px;}}"
+            f"QPushButton{{background:transparent;color:{d['muted']};border:none;font-size:11px;}}"
             f"QPushButton:hover{{color:{d['text']};}}"
         )
         btn_clear_img.clicked.connect(self._clear_pending_image)
@@ -343,31 +337,27 @@ class ChatWidget(QWidget):
         il.setContentsMargins(12, 8, 12, 8)
         il.setSpacing(8)
 
-        # ✂️ Snip button
-        self.snip_btn = QPushButton("✂️")
-        self.snip_btn.setFixedWidth(36)
-        self.snip_btn.setFixedHeight(36)
-        self.snip_btn.setCursor(Qt.PointingHandCursor)
-        self.snip_btn.setToolTip("Snipping Tool (Ctrl+Shift+S)")
-        self.snip_btn.setStyleSheet(
+        _btn_style = (
             f"QPushButton{{background:{d['surface2']};color:{d['text']};"
             f"border:1px solid {d['border']};border-radius:8px;font-size:16px;}}"
             f"QPushButton:hover{{background:{d['surface3']};}}"
         )
+
+        # ✂️ Snip button
+        self.snip_btn = QPushButton("✂️")
+        self.snip_btn.setFixedSize(36, 36)
+        self.snip_btn.setCursor(Qt.PointingHandCursor)
+        self.snip_btn.setToolTip("Snipping Tool (Ctrl+Shift+C)")
+        self.snip_btn.setStyleSheet(_btn_style)
         self.snip_btn.clicked.connect(self._trigger_snip)
         il.addWidget(self.snip_btn, alignment=Qt.AlignBottom)
 
         # 📎 Attach image button
         self.attach_btn = QPushButton("📎")
-        self.attach_btn.setFixedWidth(36)
-        self.attach_btn.setFixedHeight(36)
+        self.attach_btn.setFixedSize(36, 36)
         self.attach_btn.setCursor(Qt.PointingHandCursor)
-        self.attach_btn.setToolTip("Attach image")
-        self.attach_btn.setStyleSheet(
-            f"QPushButton{{background:{d['surface2']};color:{d['text']};"
-            f"border:1px solid {d['border']};border-radius:8px;font-size:16px;}}"
-            f"QPushButton:hover{{background:{d['surface3']};}}"
-        )
+        self.attach_btn.setToolTip("Attach image from file")
+        self.attach_btn.setStyleSheet(_btn_style)
         self.attach_btn.clicked.connect(self._attach_image)
         il.addWidget(self.attach_btn, alignment=Qt.AlignBottom)
 
@@ -381,16 +371,16 @@ class ChatWidget(QWidget):
         )
         self.input_box.installEventFilter(self)
         il.addWidget(self.input_box)
+
         self.send_btn = QPushButton("Send ↑")
-        self.send_btn.setFixedWidth(74)
-        self.send_btn.setFixedHeight(74)
+        self.send_btn.setFixedSize(74, 74)
         self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(accent_btn_qss())
         self.send_btn.clicked.connect(self._send)
         il.addWidget(self.send_btn)
         root.addWidget(inp)
 
-        # Smart status bar
+        # Status bar
         self.status_lbl = QLabel("Ready")
         self.status_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;padding:2px 14px 4px;")
         root.addWidget(self.status_lbl)
@@ -402,7 +392,7 @@ class ChatWidget(QWidget):
                 self._send(); return True
         return super().eventFilter(obj, event)
 
-    # ── Snip / image attach ─────────────────────────────────────
+    # ── Snip / image ───────────────────────────────────────────
     def _trigger_snip(self):
         from snipping_tool import trigger_snip
         trigger_snip(self, self.attach_image)
@@ -420,7 +410,6 @@ class ChatWidget(QWidget):
     def attach_image(self, b64: str, prompt: str = ""):
         """Stage a base64 image to be included in the next message send."""
         self._pending_image_b64 = b64
-        # Show thumbnail preview
         img_data = base64.b64decode(b64)
         pil = Image.open(io.BytesIO(img_data))
         pil.thumbnail((64, 48))
@@ -432,8 +421,7 @@ class ChatWidget(QWidget):
         self.img_preview_lbl.setPixmap(pix)
         self.img_bar.show()
         if prompt:
-            current = self.input_box.toPlainText().strip()
-            if not current:
+            if not self.input_box.toPlainText().strip():
                 self.input_box.setPlainText(prompt)
 
     def _clear_pending_image(self):
@@ -458,7 +446,6 @@ class ChatWidget(QWidget):
         self.system_prompt = prompt
 
     def set_dropbox_context(self, context_text: str):
-        """Set Dropbox file content injected between agent instructions and user message."""
         self._dropbox_context = context_text
         if context_text:
             self.btn_resync.show()
@@ -474,18 +461,13 @@ class ChatWidget(QWidget):
                 return
             parent = parent.parent()
 
-    # ── Smart status helpers ────────────────────────────────────
+    # ── Status ──────────────────────────────────────────────
     def _update_status_idle(self):
         model = self.model_combo.currentText()
         web   = " · 🔍 Web on" if self.web_check.isChecked() else ""
         db_ctx = " · ☁️ Dropbox" if self._dropbox_context else ""
         count = self._msg_count
-        if count == 0:
-            msg_info = "No messages yet"
-        elif count == 1:
-            msg_info = "1 message"
-        else:
-            msg_info = f"{count} messages"
+        msg_info = "No messages yet" if count == 0 else ("1 message" if count == 1 else f"{count} messages")
         self._set_status(f"🧠 {model}  ·  {msg_info}{web}{db_ctx}")
 
     def _on_model_changed(self, model_name: str):
@@ -522,13 +504,9 @@ class ChatWidget(QWidget):
         self.code_bar.hide()
         self._last_code_blocks = []
 
-        # Build user message content — text only, or image + text
         if self._pending_image_b64:
             user_content = [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{self._pending_image_b64}"}
-                },
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{self._pending_image_b64}"}},
                 {"type": "text", "text": user_text or "What is in this image?"}
             ]
             display_text = f"[Image attached] {user_text}" if user_text else "[Image attached]"
@@ -541,14 +519,9 @@ class ChatWidget(QWidget):
         self._msg_count += 1
         self._render_msg("user", display_text)
 
-        # Build system prompt
         system = self.system_prompt
         if self._dropbox_context:
-            system = (
-                system.rstrip() +
-                "\n\n--- Dropbox Context Files ---\n" +
-                self._dropbox_context
-            )
+            system = system.rstrip() + "\n\n--- Dropbox Context Files ---\n" + self._dropbox_context
 
         extra = ""
         if self.web_check.isChecked():
@@ -573,9 +546,8 @@ class ChatWidget(QWidget):
 
         history  = db.get_messages(self.current_thread_id)
         messages = [{"role": "system", "content": system}]
-        for m in history[:-1]:  # exclude the just-added user message
+        for m in history[:-1]:
             messages.append({"role": m["role"], "content": m["content"]})
-        # Add the actual user content (may be multimodal)
         messages.append({"role": "user", "content": user_content})
 
         model = self.model_combo.currentText()
@@ -601,8 +573,7 @@ class ChatWidget(QWidget):
 
     def _on_chunk(self, delta: str):
         self._stream_buffer += delta
-        if not self._stream_started:
-            self._stream_started = True
+        self._stream_started = True
         cursor = self.display.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(delta)

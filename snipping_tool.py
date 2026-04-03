@@ -7,17 +7,15 @@ from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog,
     QButtonGroup, QRadioButton, QDialog, QRubberBand,
-    QSizePolicy, QMessageBox
+    QSizePolicy
 )
-from PyQt5.QtCore import Qt, QRect, QSize, QPoint, pyqtSignal
-from PyQt5.QtGui import (
-    QPixmap, QPainter, QColor, QPen, QCursor, QImage, QIcon
-)
+from PyQt5.QtCore import Qt, QRect, QSize, QPoint, QTimer, pyqtSignal
+from PyQt5.QtGui import QPixmap, QPainter, QColor, QCursor, QImage
 from PIL import Image
 import keyboard
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────
 
 def pil_to_qpixmap(img: Image.Image) -> QPixmap:
     buf = io.BytesIO()
@@ -33,12 +31,12 @@ def image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ── Fullscreen snip overlay ───────────────────────────────────────────────────
+# ── Fullscreen snip overlay ───────────────────────────────────────────────
 
 class SnipOverlay(QWidget):
     """Fullscreen semi-transparent overlay — user drags to select a region."""
 
-    snipped = pyqtSignal(object)   # emits PIL Image on completion
+    snipped = pyqtSignal(object)  # emits PIL Image on completion
 
     def __init__(self):
         super().__init__()
@@ -51,7 +49,6 @@ class SnipOverlay(QWidget):
         self.setCursor(QCursor(Qt.CrossCursor))
         self.setWindowState(Qt.WindowFullScreen)
 
-        # Grab the full desktop as a background reference
         screen = QApplication.primaryScreen()
         self._bg = screen.grabWindow(0)
         geo = QApplication.desktop().screenGeometry()
@@ -90,9 +87,7 @@ class SnipOverlay(QWidget):
         if rect.width() < 5 or rect.height() < 5:
             return
 
-        # Capture the selected region from the saved background pixmap
         cropped = self._bg.copy(rect)
-        buf = io.BytesIO()
         qimg = cropped.toImage()
         w, h = qimg.width(), qimg.height()
         ptr = qimg.bits()
@@ -101,7 +96,7 @@ class SnipOverlay(QWidget):
         self.snipped.emit(pil)
 
 
-# ── Snip toolbar / result window ─────────────────────────────────────────────
+# ── Snip toolbar / result window ───────────────────────────────────────────
 
 SUGGESTED_PROMPTS = [
     "What does this say?",
@@ -128,7 +123,7 @@ LANGUAGES = [
 
 
 class SnipToolbar(QDialog):
-    """Post-snip action dialog — Send to AI / OCR / Save / Edit."""
+    """Post-snip action dialog — Send to AI / OCR / Save / Copy."""
 
     def __init__(self, image: Image.Image, send_to_chat_callback, parent=None):
         super().__init__(parent, Qt.WindowStaysOnTopHint)
@@ -149,20 +144,15 @@ class SnipToolbar(QDialog):
         root.setContentsMargins(14, 14, 14, 14)
 
         # Preview
-        preview_pix = pil_to_qpixmap(self.image).scaledToWidth(
-            490, Qt.SmoothTransformation
-        )
+        preview_pix = pil_to_qpixmap(self.image).scaledToWidth(490, Qt.SmoothTransformation)
         lbl_preview = QLabel()
         lbl_preview.setPixmap(preview_pix)
         lbl_preview.setAlignment(Qt.AlignCenter)
-        lbl_preview.setStyleSheet(
-            f"border:1px solid {d['border']};border-radius:6px;padding:2px;"
-        )
+        lbl_preview.setStyleSheet(f"border:1px solid {d['border']};border-radius:6px;padding:2px;")
         root.addWidget(lbl_preview)
 
-        # OCR mode toggle
+        # OCR mode
         mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
         mode_lbl = QLabel("OCR Mode:")
         mode_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
         mode_row.addWidget(mode_lbl)
@@ -170,9 +160,9 @@ class SnipToolbar(QDialog):
         self.rb_ai    = QRadioButton("🤖 AI OCR")
         self.rb_quick.setChecked(True)
         self.rb_quick.toggled.connect(self._toggle_lang_bar)
-        mode_group = QButtonGroup(self)
-        mode_group.addButton(self.rb_quick)
-        mode_group.addButton(self.rb_ai)
+        grp = QButtonGroup(self)
+        grp.addButton(self.rb_quick)
+        grp.addButton(self.rb_ai)
         mode_row.addWidget(self.rb_quick)
         mode_row.addWidget(self.rb_ai)
         mode_row.addStretch()
@@ -194,8 +184,7 @@ class SnipToolbar(QDialog):
             btn.setChecked(code == "auto")
             btn.setStyleSheet(
                 f"QPushButton{{background:{d['surface2']};color:{d['muted']};"
-                f"border:1px solid {d['border']};border-radius:4px;"
-                f"font-size:10px;padding:0 6px;}}"
+                f"border:1px solid {d['border']};border-radius:4px;font-size:10px;padding:0 6px;}}"
                 f"QPushButton:checked{{background:{d['accent']};color:#fff;border-color:{d['accent']};}}"
                 f"QPushButton:hover{{background:{d['surface3']};color:{d['text']};}}"
             )
@@ -205,12 +194,12 @@ class SnipToolbar(QDialog):
         lang_row.addStretch()
         root.addWidget(self.lang_widget)
 
-        # Prompt selector
+        # Prompt
+        from PyQt5.QtWidgets import QComboBox
         prompt_row = QHBoxLayout()
         prompt_lbl = QLabel("Prompt:")
         prompt_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
         prompt_row.addWidget(prompt_lbl)
-        from PyQt5.QtWidgets import QComboBox
         self.prompt_combo = QComboBox()
         self.prompt_combo.addItems(SUGGESTED_PROMPTS)
         self.prompt_combo.setEditable(True)
@@ -221,18 +210,16 @@ class SnipToolbar(QDialog):
         # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
-        actions = [
-            ("📤 Send to AI",    self._send_to_ai),
-            ("📝 Extract Text",  self._extract_text),
-            ("💾 Save",          self._save),
-            ("📋 Copy",          self._copy),
-        ]
-        for text, fn in actions:
+        for text, fn in [
+            ("📤 Send to AI",   self._send_to_ai),
+            ("📝 Extract Text", self._extract_text),
+            ("💾 Save",         self._save),
+            ("📋 Copy",         self._copy),
+        ]:
             b = QPushButton(text)
             b.setStyleSheet(accent_btn_qss() if "Send" in text else
                 f"QPushButton{{background:{d['surface2']};color:{d['text']};"
-                f"border:1px solid {d['border']};border-radius:6px;"
-                f"padding:6px 12px;font-size:11px;}}"
+                f"border:1px solid {d['border']};border-radius:6px;padding:6px 12px;font-size:11px;}}"
                 f"QPushButton:hover{{background:{d['surface3']};}}"
             )
             b.setCursor(Qt.PointingHandCursor)
@@ -241,7 +228,7 @@ class SnipToolbar(QDialog):
         btn_row.addStretch()
         root.addLayout(btn_row)
 
-        # OCR result box (hidden until Extract Text is run)
+        # Result area
         self.result_lbl = QLabel("")
         self.result_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
         self.result_lbl.hide()
@@ -269,8 +256,7 @@ class SnipToolbar(QDialog):
 
     def _send_to_ai(self):
         b64 = image_to_base64(self.image)
-        prompt = self.prompt_combo.currentText()
-        self.send_to_chat_callback(b64, prompt)
+        self.send_to_chat_callback(b64, self.prompt_combo.currentText())
         self.accept()
 
     def _extract_text(self):
@@ -288,8 +274,7 @@ class SnipToolbar(QDialog):
 
     def _save(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Snip", "snip.png",
-            "PNG Image (*.png);;JPEG Image (*.jpg)"
+            self, "Save Snip", "snip.png", "PNG Image (*.png);;JPEG Image (*.jpg)"
         )
         if path:
             self.image.save(path)
@@ -297,16 +282,15 @@ class SnipToolbar(QDialog):
             self.result_lbl.show()
 
     def _copy(self):
-        pix = pil_to_qpixmap(self.image)
-        QApplication.clipboard().setPixmap(pix)
+        QApplication.clipboard().setPixmap(pil_to_qpixmap(self.image))
         self.result_lbl.setText("Image copied to clipboard.")
         self.result_lbl.show()
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────
 
 def trigger_snip(parent_widget, send_to_chat_callback):
-    """Launch the snip overlay. Called from button click or hotkey."""
+    """Launch the snip overlay. Safe to call from the Qt main thread."""
     overlay = SnipOverlay()
 
     def on_snipped(image: Image.Image):
@@ -317,16 +301,13 @@ def trigger_snip(parent_widget, send_to_chat_callback):
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
-    """Register Ctrl+Shift+C as a global hotkey to trigger the snip overlay."""
-    def _trigger():
-        from PyQt5.QtCore import QMetaObject, Qt as _Qt
-        QMetaObject.invokeMethod(
-            root, "_trigger_snip", _Qt.QueuedConnection
-        )
+    """
+    Register Ctrl+Shift+C as a global hotkey.
+    Uses a QTimer.singleShot to safely dispatch to the Qt main thread,
+    avoiding the QMetaObject.invokeMethod pitfall with non-Qt slots.
+    """
+    def _on_hotkey():
+        # This runs in the keyboard listener thread — schedule on Qt main thread
+        QTimer.singleShot(0, lambda: trigger_snip(root, send_to_chat_callback))
 
-    import types
-    def _trigger_snip(self):
-        trigger_snip(self, getattr(self, "attach_image", lambda b64, p: None))
-
-    root._trigger_snip = types.MethodType(_trigger_snip, root)
-    keyboard.add_hotkey("ctrl+shift+c", _trigger)
+    keyboard.add_hotkey("ctrl+shift+c", _on_hotkey)
