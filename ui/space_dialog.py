@@ -1,4 +1,4 @@
-"""Dialog for creating / editing a Space."""
+"""Dialog for creating / editing an Agent."""
 
 import os
 from PyQt5.QtWidgets import (
@@ -19,7 +19,7 @@ class SpaceDialog(QDialog):
         super().__init__(parent)
         self.space = space
         self.space_id = space["id"] if space else None
-        self.setWindowTitle("Edit Space" if space else "New Space")
+        self.setWindowTitle("Edit Agent" if space else "New Agent")
         self.resize(560, 520)
         self._build_ui()
         if space:
@@ -36,7 +36,7 @@ class SpaceDialog(QDialog):
         self.model_combo = QComboBox()
         self.model_combo.addItems(AVAILABLE_MODELS)
         self.instructions_edit = QTextEdit()
-        self.instructions_edit.setPlaceholderText("System instructions for the AI in this space...")
+        self.instructions_edit.setPlaceholderText("System instructions for the AI in this agent...")
         self.web_search_check = QCheckBox("Enable web search")
         self.web_search_check.setChecked(True)
         self.github_repo_edit = QLineEdit()
@@ -73,7 +73,7 @@ class SpaceDialog(QDialog):
         self.btn_del_task   = QPushButton("Remove")
         task_btn_row.addWidget(self.btn_add_task)
         task_btn_row.addWidget(self.btn_del_task)
-        tl.addWidget(QLabel("Scheduled AI tasks for this space:"))
+        tl.addWidget(QLabel("Scheduled AI tasks for this agent:"))
         tl.addWidget(self.task_list)
         tl.addLayout(task_btn_row)
         self.btn_add_task.clicked.connect(self._add_task)
@@ -128,7 +128,7 @@ class SpaceDialog(QDialog):
 
     def _add_task(self):
         if not self.space_id:
-            QMessageBox.information(self, "Tasks", "Save the space first before adding tasks.")
+            QMessageBox.information(self, "Tasks", "Save the agent first before adding tasks.")
             return
         name, ok = QInputDialog.getText(self, "Task Name", "Task name:")
         if not ok or not name.strip():
@@ -167,7 +167,7 @@ class SpaceDialog(QDialog):
 
     def get_data(self) -> dict:
         return {
-            "name":        self.name_edit.text().strip() or "Unnamed Space",
+            "name":        self.name_edit.text().strip() or "Unnamed Agent",
             "instructions": self.instructions_edit.toPlainText().strip(),
             "model":       self.model_combo.currentText(),
             "github_repo": self.github_repo_edit.text().strip(),

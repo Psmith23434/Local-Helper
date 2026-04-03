@@ -45,6 +45,31 @@ THEMES = {
         "code_bg":      "#1a1a1a",
         "scrollbar":    "#424242",
     },
+    # ── Fire ─────────────────────────────────────────────────────────────────
+    # Deep charcoal base with ember oranges, molten gold accents and ash whites.
+    # Inspired by: glowing coals, forge light, lava cracks.
+    "Fire": {
+        "bg":           "#0e0a07",   # near-black with warm brown undertone
+        "surface":      "#17100a",   # dark charred wood
+        "surface2":     "#1f160e",   # slightly lighter ember layer
+        "surface3":     "#271c12",   # warm medium dark
+        "border":       "#3d2710",   # dark amber border
+        "accent":       "#f97316",   # vivid orange flame
+        "accent_dim":   "#c2410c",   # burnt ember
+        "accent2":      "#fbbf24",   # molten gold / yellow core
+        "text":         "#f5e6d0",   # warm ash white
+        "muted":        "#a07850",   # faded ember / warm grey
+        "faint":        "#3d2710",   # very dark ember
+        "user_color":   "#fb923c",   # orange flame — user messages
+        "ai_color":     "#fcd34d",   # gold — AI responses
+        "red":          "#ef4444",   # hot red for errors/danger
+        "yellow":       "#fbbf24",   # amber
+        "blue":         "#93c5fd",   # cool contrast blue (rare use)
+        "tab_active":   "#1f160e",
+        "tab_inactive": "#0e0a07",
+        "code_bg":      "#0a0804",   # near-black for code blocks
+        "scrollbar":    "#3d2710",
+    },
 }
 
 _current = "Dark"
