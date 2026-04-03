@@ -1,12 +1,15 @@
 """Reusable chat widget used by both General Chat and Agents tabs."""
 
 import re
+import base64
+import io
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextBrowser, QTextEdit,
     QPushButton, QComboBox, QLabel, QCheckBox, QFileDialog, QApplication
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtGui import QFont, QTextCursor
+from PIL import Image
 import database as db
 import ai_client
 import search
@@ -217,6 +220,7 @@ class ChatWidget(QWidget):
         self._on_thread_renamed = on_thread_renamed
         self._web_search_default = web_search_default
         self._msg_count        = 0
+        self._pending_image_b64: str | None = None  # base64 image staged for next send
         self._build_ui()
 
     def _build_ui(self):
@@ -237,7 +241,7 @@ class ChatWidget(QWidget):
         tl.addWidget(self.context_label)
         tl.addStretch()
 
-        # Re-sync Dropbox button (only visible when Dropbox context is loaded)
+        # Re-sync Dropbox button
         self.btn_resync = QPushButton("☁️ Re-sync")
         self.btn_resync.setFixedHeight(26)
         self.btn_resync.setFixedWidth(90)
@@ -249,7 +253,7 @@ class ChatWidget(QWidget):
             f"QPushButton:hover{{background:{d['surface3']};color:{d['text']};}}"
         )
         self.btn_resync.clicked.connect(self._on_resync_clicked)
-        self.btn_resync.hide()  # hidden until Dropbox context is set
+        self.btn_resync.hide()
         tl.addWidget(self.btn_resync)
 
         tl.addWidget(QLabel("Model:"))
@@ -305,6 +309,32 @@ class ChatWidget(QWidget):
         self.code_bar.hide()
         root.addWidget(self.code_bar)
 
+        # Image preview bar (shown when a snip is staged)
+        self.img_bar = QWidget()
+        self.img_bar.setStyleSheet(
+            f"background:{d['surface']};border-top:1px solid {d['border']};"
+        )
+        ibl = QHBoxLayout(self.img_bar)
+        ibl.setContentsMargins(10, 4, 10, 4)
+        ibl.setSpacing(8)
+        self.img_preview_lbl = QLabel()
+        self.img_preview_lbl.setFixedHeight(48)
+        ibl.addWidget(self.img_preview_lbl)
+        self.img_name_lbl = QLabel("Image attached")
+        self.img_name_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        ibl.addWidget(self.img_name_lbl)
+        ibl.addStretch()
+        btn_clear_img = QPushButton("✕ Remove")
+        btn_clear_img.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{d['muted']};"
+            f"border:none;font-size:11px;}}"
+            f"QPushButton:hover{{color:{d['text']};}}"
+        )
+        btn_clear_img.clicked.connect(self._clear_pending_image)
+        ibl.addWidget(btn_clear_img)
+        self.img_bar.hide()
+        root.addWidget(self.img_bar)
+
         # Input area
         inp = QWidget()
         inp.setFixedHeight(90)
@@ -312,6 +342,35 @@ class ChatWidget(QWidget):
         il = QHBoxLayout(inp)
         il.setContentsMargins(12, 8, 12, 8)
         il.setSpacing(8)
+
+        # ✂️ Snip button
+        self.snip_btn = QPushButton("✂️")
+        self.snip_btn.setFixedWidth(36)
+        self.snip_btn.setFixedHeight(36)
+        self.snip_btn.setCursor(Qt.PointingHandCursor)
+        self.snip_btn.setToolTip("Snipping Tool (Ctrl+Shift+S)")
+        self.snip_btn.setStyleSheet(
+            f"QPushButton{{background:{d['surface2']};color:{d['text']};"
+            f"border:1px solid {d['border']};border-radius:8px;font-size:16px;}}"
+            f"QPushButton:hover{{background:{d['surface3']};}}"
+        )
+        self.snip_btn.clicked.connect(self._trigger_snip)
+        il.addWidget(self.snip_btn, alignment=Qt.AlignBottom)
+
+        # 📎 Attach image button
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setFixedWidth(36)
+        self.attach_btn.setFixedHeight(36)
+        self.attach_btn.setCursor(Qt.PointingHandCursor)
+        self.attach_btn.setToolTip("Attach image")
+        self.attach_btn.setStyleSheet(
+            f"QPushButton{{background:{d['surface2']};color:{d['text']};"
+            f"border:1px solid {d['border']};border-radius:8px;font-size:16px;}}"
+            f"QPushButton:hover{{background:{d['surface3']};}}"
+        )
+        self.attach_btn.clicked.connect(self._attach_image)
+        il.addWidget(self.attach_btn, alignment=Qt.AlignBottom)
+
         self.input_box = QTextEdit()
         self.input_box.setObjectName("InputBox")
         self.input_box.setPlaceholderText("Ask anything... (Ctrl+Enter to send)")
@@ -343,6 +402,45 @@ class ChatWidget(QWidget):
                 self._send(); return True
         return super().eventFilter(obj, event)
 
+    # ── Snip / image attach ─────────────────────────────────────
+    def _trigger_snip(self):
+        from snipping_tool import trigger_snip
+        trigger_snip(self, self.attach_image)
+
+    def _attach_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach Image", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.gif)"
+        )
+        if path:
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            self.attach_image(b64, prompt="")
+
+    def attach_image(self, b64: str, prompt: str = ""):
+        """Stage a base64 image to be included in the next message send."""
+        self._pending_image_b64 = b64
+        # Show thumbnail preview
+        img_data = base64.b64decode(b64)
+        pil = Image.open(io.BytesIO(img_data))
+        pil.thumbnail((64, 48))
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        from PyQt5.QtGui import QPixmap, QImage
+        qimg = QImage.fromData(buf.getvalue())
+        pix = QPixmap.fromImage(qimg)
+        self.img_preview_lbl.setPixmap(pix)
+        self.img_bar.show()
+        if prompt:
+            current = self.input_box.toPlainText().strip()
+            if not current:
+                self.input_box.setPlainText(prompt)
+
+    def _clear_pending_image(self):
+        self._pending_image_b64 = None
+        self.img_preview_lbl.clear()
+        self.img_bar.hide()
+
     # ── Public API ──────────────────────────────────────────────
     def load_thread(self, thread_id: int, context_label: str = ""):
         self.current_thread_id = thread_id
@@ -368,8 +466,6 @@ class ChatWidget(QWidget):
             self.btn_resync.hide()
 
     def _on_resync_clicked(self):
-        """Signal the parent AgentsTab to re-download Dropbox files."""
-        # Walk up to find AgentsTab and call its resync method
         parent = self.parent()
         while parent is not None:
             if hasattr(parent, '_load_dropbox_context') and hasattr(parent, 'current_agent_id'):
@@ -418,17 +514,34 @@ class ChatWidget(QWidget):
         if not self.current_thread_id:
             self._set_status("⚠ No thread selected.", error=True); return
         user_text = self.input_box.toPlainText().strip()
-        if not user_text or self._streaming: return
+        if not user_text and not self._pending_image_b64: return
+        if self._streaming: return
 
         self.input_box.clear()
         self.send_btn.setEnabled(False)
         self.code_bar.hide()
         self._last_code_blocks = []
-        db.add_message(self.current_thread_id, "user", user_text)
-        self._msg_count += 1
-        self._render_msg("user", user_text)
 
-        # ── Build system prompt: instructions → Dropbox context → (other context appended below)
+        # Build user message content — text only, or image + text
+        if self._pending_image_b64:
+            user_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{self._pending_image_b64}"}
+                },
+                {"type": "text", "text": user_text or "What is in this image?"}
+            ]
+            display_text = f"[Image attached] {user_text}" if user_text else "[Image attached]"
+            self._clear_pending_image()
+        else:
+            user_content = user_text
+            display_text = user_text
+
+        db.add_message(self.current_thread_id, "user", display_text)
+        self._msg_count += 1
+        self._render_msg("user", display_text)
+
+        # Build system prompt
         system = self.system_prompt
         if self._dropbox_context:
             system = (
@@ -460,8 +573,10 @@ class ChatWidget(QWidget):
 
         history  = db.get_messages(self.current_thread_id)
         messages = [{"role": "system", "content": system}]
-        for m in history:
+        for m in history[:-1]:  # exclude the just-added user message
             messages.append({"role": m["role"], "content": m["content"]})
+        # Add the actual user content (may be multimodal)
+        messages.append({"role": "user", "content": user_content})
 
         model = self.model_combo.currentText()
         self._set_status(f"⏳ Waiting for {model}...")

@@ -1,12 +1,108 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import ImageGrab, Image, ImageTk, ImageDraw
+"""Integrated snipping tool — fully PyQt5, no tkinter dependency."""
+
 import base64
 import io
-import keyboard
-from ocr_tool import run_ocr
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+from PyQt5.QtWidgets import (
+    QWidget, QApplication, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QTextEdit, QFileDialog,
+    QButtonGroup, QRadioButton, QDialog, QRubberBand,
+    QSizePolicy, QMessageBox
+)
+from PyQt5.QtCore import Qt, QRect, QSize, QPoint, pyqtSignal
+from PyQt5.QtGui import (
+    QPixmap, QPainter, QColor, QPen, QCursor, QImage, QIcon
+)
+from PIL import Image
+import keyboard
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def pil_to_qpixmap(img: Image.Image) -> QPixmap:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    qimg = QImage.fromData(buf.read())
+    return QPixmap.fromImage(qimg)
+
+
+def image_to_base64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+# ── Fullscreen snip overlay ───────────────────────────────────────────────────
+
+class SnipOverlay(QWidget):
+    """Fullscreen semi-transparent overlay — user drags to select a region."""
+
+    snipped = pyqtSignal(object)   # emits PIL Image on completion
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setCursor(QCursor(Qt.CrossCursor))
+        self.setWindowState(Qt.WindowFullScreen)
+
+        # Grab the full desktop as a background reference
+        screen = QApplication.primaryScreen()
+        self._bg = screen.grabWindow(0)
+        geo = QApplication.desktop().screenGeometry()
+        self.setGeometry(geo)
+
+        self._origin = QPoint()
+        self._rubber = QRubberBand(QRubberBand.Rectangle, self)
+        self.show()
+
+    def paintEvent(self, _):
+        painter = QPainter(self)
+        # Draw the desktop screenshot dimmed
+        painter.drawPixmap(self.rect(), self._bg)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self._rubber.hide()
+            self.close()
+
+    def mousePressEvent(self, event):
+        self._origin = event.pos()
+        self._rubber.setGeometry(QRect(self._origin, QSize()))
+        self._rubber.show()
+
+    def mouseMoveEvent(self, event):
+        self._rubber.setGeometry(
+            QRect(self._origin, event.pos()).normalized()
+        )
+
+    def mouseReleaseEvent(self, event):
+        rect = QRect(self._origin, event.pos()).normalized()
+        self._rubber.hide()
+        self.close()
+        QApplication.processEvents()
+
+        if rect.width() < 5 or rect.height() < 5:
+            return
+
+        # Capture the selected region from the saved background pixmap
+        cropped = self._bg.copy(rect)
+        buf = io.BytesIO()
+        qimg = cropped.toImage()
+        w, h = qimg.width(), qimg.height()
+        ptr = qimg.bits()
+        ptr.setsize(qimg.byteCount())
+        pil = Image.frombytes("RGBA", (w, h), bytes(ptr), "raw", "BGRA")
+        self.snipped.emit(pil)
+
+
+# ── Snip toolbar / result window ─────────────────────────────────────────────
 
 SUGGESTED_PROMPTS = [
     "What does this say?",
@@ -16,324 +112,224 @@ SUGGESTED_PROMPTS = [
     "What is wrong with this?",
 ]
 
-
-class SnippingOverlay:
-    """Fullscreen transparent overlay for region selection."""
-
-    def __init__(self, callback):
-        self.callback = callback
-        self.start_x = self.start_y = 0
-        self.rect = None
-
-        self.root = tk.Toplevel()
-        self.root.attributes("-fullscreen", True)
-        self.root.attributes("-alpha", 0.35)
-        self.root.configure(bg="black")
-        self.root.attributes("-topmost", True)
-        self.root.config(cursor="crosshair")
-
-        self.canvas = tk.Canvas(self.root, bg="black", cursor="crosshair")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-
-        self.canvas.bind("<ButtonPress-1>", self.on_press)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
-
-    def on_press(self, event):
-        self.start_x, self.start_y = event.x_root, event.y_root
-        if self.rect:
-            self.canvas.delete(self.rect)
-
-    def on_drag(self, event):
-        if self.rect:
-            self.canvas.delete(self.rect)
-        x0 = self.start_x - self.root.winfo_rootx()
-        y0 = self.start_y - self.root.winfo_rooty()
-        x1 = event.x
-        y1 = event.y
-        self.rect = self.canvas.create_rectangle(
-            x0, y0, x1, y1,
-            outline="#00BFFF", width=2, dash=(4, 2)
-        )
-
-    def on_release(self, event):
-        end_x, end_y = event.x_root, event.y_root
-        self.root.destroy()
-        x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
-        x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
-        if x2 - x1 > 5 and y2 - y1 > 5:
-            screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-            self.callback(screenshot)
+LANGUAGES = [
+    ("Auto", "auto"),
+    ("EN",   "eng"),
+    ("DE",   "deu"),
+    ("FR",   "fra"),
+    ("ES",   "spa"),
+    ("IT",   "ita"),
+    ("NL",   "nld"),
+    ("PT",   "por"),
+    ("RU",   "rus"),
+    ("PL",   "pol"),
+    ("CS",   "ces"),
+    ("SV",   "swe"),
+]
 
 
-class SnipToolbar(tk.Toplevel):
-    """Action toolbar shown after a snip is taken."""
+class SnipToolbar(QDialog):
+    """Post-snip action dialog — Send to AI / OCR / Save / Edit."""
 
-    def __init__(self, parent, image: Image.Image, send_to_chat_callback):
-        super().__init__(parent)
+    def __init__(self, image: Image.Image, send_to_chat_callback, parent=None):
+        super().__init__(parent, Qt.WindowStaysOnTopHint)
         self.image = image
         self.send_to_chat_callback = send_to_chat_callback
-        self.ocr_mode = tk.StringVar(value="quick")
-        self.selected_lang = tk.StringVar(value="auto")
-
-        self.title("Snip Toolbar")
-        self.resizable(False, False)
-        self.attributes("-topmost", True)
+        self._selected_lang = "auto"
+        self._ocr_mode = "quick"
+        self.setWindowTitle("Snip Toolbar")
+        self.setMinimumWidth(520)
         self._build_ui()
 
     def _build_ui(self):
-        # ── Preview ──────────────────────────────────────────────
-        preview = self.image.copy()
-        preview.thumbnail((400, 300))
-        self.tk_img = ImageTk.PhotoImage(preview)
-        tk.Label(self, image=self.tk_img, bd=1, relief="solid").pack(
-            padx=10, pady=(10, 4)
+        from ui.theme import get as T
+        from ui.styles import accent_btn_qss
+        d = T()
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 14)
+
+        # Preview
+        preview_pix = pil_to_qpixmap(self.image).scaledToWidth(
+            490, Qt.SmoothTransformation
         )
-
-        # ── OCR Mode Toggle ───────────────────────────────────────
-        mode_frame = tk.Frame(self)
-        mode_frame.pack(pady=4)
-        tk.Label(mode_frame, text="OCR Mode:", font=("Segoe UI", 9)).pack(
-            side=tk.LEFT, padx=(0, 6)
+        lbl_preview = QLabel()
+        lbl_preview.setPixmap(preview_pix)
+        lbl_preview.setAlignment(Qt.AlignCenter)
+        lbl_preview.setStyleSheet(
+            f"border:1px solid {d['border']};border-radius:6px;padding:2px;"
         )
-        tk.Radiobutton(
-            mode_frame, text="⚡ Quick (Tesseract)",
-            variable=self.ocr_mode, value="quick",
-            command=self._toggle_lang_bar
-        ).pack(side=tk.LEFT)
-        tk.Radiobutton(
-            mode_frame, text="🤖 AI OCR",
-            variable=self.ocr_mode, value="ai",
-            command=self._toggle_lang_bar
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        root.addWidget(lbl_preview)
 
-        # ── Language Bar (Quick OCR only) ─────────────────────────
-        self.lang_frame = tk.Frame(self)
-        self.lang_frame.pack(pady=2)
-        tk.Label(self.lang_frame, text="Language:", font=("Segoe UI", 9)).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        langs = [
-            ("Auto 🔍", "auto"), ("EN", "eng"), ("DE", "deu"), ("FR", "fra"),
-            ("ES", "spa"), ("IT", "ita"), ("NL", "nld"), ("PT", "por"),
-            ("RU", "rus"), ("PL", "pol"), ("CS", "ces"), ("SV", "swe"),
-        ]
-        for label, code in langs:
-            tk.Radiobutton(
-                self.lang_frame, text=label,
-                variable=self.selected_lang, value=code,
-                indicatoron=False, padx=4, pady=2,
-                font=("Segoe UI", 8)
-            ).pack(side=tk.LEFT, padx=1)
+        # OCR mode toggle
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        mode_lbl = QLabel("OCR Mode:")
+        mode_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        mode_row.addWidget(mode_lbl)
+        self.rb_quick = QRadioButton("⚡ Quick (Tesseract)")
+        self.rb_ai    = QRadioButton("🤖 AI OCR")
+        self.rb_quick.setChecked(True)
+        self.rb_quick.toggled.connect(self._toggle_lang_bar)
+        mode_group = QButtonGroup(self)
+        mode_group.addButton(self.rb_quick)
+        mode_group.addButton(self.rb_ai)
+        mode_row.addWidget(self.rb_quick)
+        mode_row.addWidget(self.rb_ai)
+        mode_row.addStretch()
+        root.addLayout(mode_row)
 
-        # ── Suggested Prompt ──────────────────────────────────────
-        prompt_frame = tk.Frame(self)
-        prompt_frame.pack(pady=4, padx=10, fill=tk.X)
-        tk.Label(prompt_frame, text="Prompt:", font=("Segoe UI", 9)).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.prompt_var = tk.StringVar(value=SUGGESTED_PROMPTS[0])
-        prompt_menu = tk.OptionMenu(prompt_frame, self.prompt_var, *SUGGESTED_PROMPTS)
-        prompt_menu.config(font=("Segoe UI", 9))
-        prompt_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Language bar
+        self.lang_widget = QWidget()
+        lang_row = QHBoxLayout(self.lang_widget)
+        lang_row.setContentsMargins(0, 0, 0, 0)
+        lang_row.setSpacing(4)
+        lang_lbl = QLabel("Language:")
+        lang_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        lang_row.addWidget(lang_lbl)
+        self._lang_btns = {}
+        for label, code in LANGUAGES:
+            btn = QPushButton(label)
+            btn.setFixedHeight(24)
+            btn.setCheckable(True)
+            btn.setChecked(code == "auto")
+            btn.setStyleSheet(
+                f"QPushButton{{background:{d['surface2']};color:{d['muted']};"
+                f"border:1px solid {d['border']};border-radius:4px;"
+                f"font-size:10px;padding:0 6px;}}"
+                f"QPushButton:checked{{background:{d['accent']};color:#fff;border-color:{d['accent']};}}"
+                f"QPushButton:hover{{background:{d['surface3']};color:{d['text']};}}"
+            )
+            btn.clicked.connect(lambda _, c=code: self._select_lang(c))
+            lang_row.addWidget(btn)
+            self._lang_btns[code] = btn
+        lang_row.addStretch()
+        root.addWidget(self.lang_widget)
 
-        # ── Action Buttons ────────────────────────────────────────
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(pady=8, padx=10)
+        # Prompt selector
+        prompt_row = QHBoxLayout()
+        prompt_lbl = QLabel("Prompt:")
+        prompt_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        prompt_row.addWidget(prompt_lbl)
+        from PyQt5.QtWidgets import QComboBox
+        self.prompt_combo = QComboBox()
+        self.prompt_combo.addItems(SUGGESTED_PROMPTS)
+        self.prompt_combo.setEditable(True)
+        self.prompt_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        prompt_row.addWidget(self.prompt_combo)
+        root.addLayout(prompt_row)
 
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
         actions = [
-            ("📤 Send to AI", self.send_to_ai),
-            ("📝 Extract Text", self.extract_text),
-            ("💾 Save", self.save_image),
-            ("✏️ Edit", self.open_editor),
-            ("📋 Copy", self.copy_to_clipboard),
+            ("📤 Send to AI",    self._send_to_ai),
+            ("📝 Extract Text",  self._extract_text),
+            ("💾 Save",          self._save),
+            ("📋 Copy",          self._copy),
         ]
-        for text, cmd in actions:
-            tk.Button(
-                btn_frame, text=text, command=cmd,
-                font=("Segoe UI", 9), padx=8, pady=4
-            ).pack(side=tk.LEFT, padx=3)
+        for text, fn in actions:
+            b = QPushButton(text)
+            b.setStyleSheet(accent_btn_qss() if "Send" in text else
+                f"QPushButton{{background:{d['surface2']};color:{d['text']};"
+                f"border:1px solid {d['border']};border-radius:6px;"
+                f"padding:6px 12px;font-size:11px;}}"
+                f"QPushButton:hover{{background:{d['surface3']};}}"
+            )
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(fn)
+            btn_row.addWidget(b)
+        btn_row.addStretch()
+        root.addLayout(btn_row)
 
-        # ── OCR Result Box ────────────────────────────────────────
-        self.result_label = tk.Label(
-            self, text="", font=("Segoe UI", 9), fg="#555"
+        # OCR result box (hidden until Extract Text is run)
+        self.result_lbl = QLabel("")
+        self.result_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        self.result_lbl.hide()
+        root.addWidget(self.result_lbl)
+
+        self.result_box = QTextEdit()
+        self.result_box.setReadOnly(False)
+        self.result_box.setFixedHeight(110)
+        self.result_box.setStyleSheet(
+            f"QTextEdit{{background:{d['surface2']};color:{d['text']};"
+            f"border:1px solid {d['border']};border-radius:6px;"
+            f"font-family:Consolas,monospace;font-size:11px;padding:6px;}}"
         )
-        self.result_label.pack()
-        self.result_text = tk.Text(
-            self, height=6, font=("Consolas", 9), wrap=tk.WORD, state=tk.DISABLED
-        )
+        self.result_box.hide()
+        root.addWidget(self.result_box)
 
-    def _toggle_lang_bar(self):
-        if self.ocr_mode.get() == "quick":
-            self.lang_frame.pack(pady=2)
-        else:
-            self.lang_frame.pack_forget()
+    def _toggle_lang_bar(self, quick_checked: bool):
+        self.lang_widget.setVisible(quick_checked)
+        self._ocr_mode = "quick" if quick_checked else "ai"
 
-    def _image_to_base64(self) -> str:
-        buffer = io.BytesIO()
-        self.image.save(buffer, format="PNG")
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    def _select_lang(self, code: str):
+        self._selected_lang = code
+        for c, btn in self._lang_btns.items():
+            btn.setChecked(c == code)
 
-    def send_to_ai(self):
-        b64 = self._image_to_base64()
-        prompt = self.prompt_var.get()
+    def _send_to_ai(self):
+        b64 = image_to_base64(self.image)
+        prompt = self.prompt_combo.currentText()
         self.send_to_chat_callback(b64, prompt)
-        self.destroy()
+        self.accept()
 
-    def extract_text(self):
-        mode = self.ocr_mode.get()
-        lang = self.selected_lang.get() if mode == "quick" else None
-        self.result_label.config(text="Extracting text...")
-        self.update()
+    def _extract_text(self):
+        from ocr_tool import run_ocr
+        lang = None if self._selected_lang == "auto" else self._selected_lang
+        self.result_lbl.setText("Extracting text...")
+        self.result_lbl.show()
+        self.result_box.hide()
+        QApplication.processEvents()
+        text = run_ocr(self.image, mode=self._ocr_mode, lang_override=lang)
+        self.result_box.setPlainText(text)
+        self.result_lbl.setText("Extracted Text (editable):")
+        self.result_box.show()
+        self.adjustSize()
 
-        text = run_ocr(self.image, mode=mode, lang_override=None if lang == "auto" else lang)
-
-        self.result_text.config(state=tk.NORMAL)
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(tk.END, text)
-        self.result_text.config(state=tk.DISABLED)
-        self.result_text.pack(padx=10, pady=(0, 8), fill=tk.BOTH)
-        self.result_label.config(text="Extracted Text:")
-
-    def save_image(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg")],
-            title="Save Snip"
+    def _save(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Snip", "snip.png",
+            "PNG Image (*.png);;JPEG Image (*.jpg)"
         )
         if path:
             self.image.save(path)
-            messagebox.showinfo("Saved", f"Snip saved to:\n{path}")
+            self.result_lbl.setText(f"Saved to {path}")
+            self.result_lbl.show()
 
-    def open_editor(self):
-        SnipEditor(self, self.image)
-
-    def copy_to_clipboard(self):
-        # Copy image to clipboard via temporary file + shell
-        import tempfile, subprocess, sys
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            self.image.save(f.name)
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["powershell", "-command",
-                     f"Set-Clipboard -Path '{f.name}'"],
-                    check=False
-                )
-        self.result_label.config(text="Image copied to clipboard.")
+    def _copy(self):
+        pix = pil_to_qpixmap(self.image)
+        QApplication.clipboard().setPixmap(pix)
+        self.result_lbl.setText("Image copied to clipboard.")
+        self.result_lbl.show()
 
 
-class SnipEditor(tk.Toplevel):
-    """Minimal annotation editor: draw, highlight, add arrows."""
+# ── Public API ────────────────────────────────────────────────────────────────
 
-    def __init__(self, parent, image: Image.Image):
-        super().__init__(parent)
-        self.title("Edit Snip")
-        self.orig_image = image.copy()
-        self.draw_image = image.copy()
-        self.draw_layer = ImageDraw.Draw(self.draw_image)
-        self.tool = tk.StringVar(value="pen")
-        self.color = "red"
-        self.last_x = self.last_y = None
-        self._build_ui()
+def trigger_snip(parent_widget, send_to_chat_callback):
+    """Launch the snip overlay. Called from button click or hotkey."""
+    overlay = SnipOverlay()
 
-    def _build_ui(self):
-        toolbar = tk.Frame(self)
-        toolbar.pack(fill=tk.X, padx=4, pady=4)
+    def on_snipped(image: Image.Image):
+        toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
+        toolbar.exec_()
 
-        tools = [("✏️ Pen", "pen"), ("🔲 Rect", "rect"), ("➡️ Arrow", "arrow")]
-        for label, val in tools:
-            tk.Radiobutton(
-                toolbar, text=label, variable=self.tool,
-                value=val, indicatoron=False, padx=6
-            ).pack(side=tk.LEFT, padx=2)
-
-        colors = [("Red", "red"), ("Yellow", "yellow"), ("Blue", "blue"), ("Green", "green")]
-        for label, col in colors:
-            tk.Button(
-                toolbar, text=label, bg=col, width=6,
-                command=lambda c=col: setattr(self, "color", c)
-            ).pack(side=tk.LEFT, padx=2)
-
-        tk.Button(toolbar, text="💾 Save", command=self.save).pack(side=tk.RIGHT, padx=4)
-        tk.Button(toolbar, text="↩ Undo", command=self.undo).pack(side=tk.RIGHT, padx=2)
-
-        self.tk_img = ImageTk.PhotoImage(self.draw_image)
-        self.canvas = tk.Canvas(
-            self, width=self.draw_image.width, height=self.draw_image.height
-        )
-        self.canvas.pack()
-        self.canvas_img = self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_img)
-
-        self.canvas.bind("<ButtonPress-1>", self.on_press)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_release)
-
-        self.history = []
-
-    def _refresh(self):
-        self.tk_img = ImageTk.PhotoImage(self.draw_image)
-        self.canvas.itemconfig(self.canvas_img, image=self.tk_img)
-
-    def on_press(self, e):
-        self.last_x, self.last_y = e.x, e.y
-        self.history.append(self.draw_image.copy())
-
-    def on_drag(self, e):
-        if self.tool.get() == "pen" and self.last_x is not None:
-            self.draw_layer.line(
-                [self.last_x, self.last_y, e.x, e.y],
-                fill=self.color, width=3
-            )
-            self.last_x, self.last_y = e.x, e.y
-            self._refresh()
-
-    def on_release(self, e):
-        if self.tool.get() == "rect":
-            self.draw_layer.rectangle(
-                [self.last_x, self.last_y, e.x, e.y],
-                outline=self.color, width=3
-            )
-        elif self.tool.get() == "arrow":
-            self.draw_layer.line(
-                [self.last_x, self.last_y, e.x, e.y],
-                fill=self.color, width=3
-            )
-            self.draw_layer.polygon(
-                [e.x, e.y,
-                 e.x - 10, e.y - 6,
-                 e.x - 10, e.y + 6],
-                fill=self.color
-            )
-        self._refresh()
-
-    def undo(self):
-        if self.history:
-            self.draw_image = self.history.pop()
-            self.draw_layer = ImageDraw.Draw(self.draw_image)
-            self._refresh()
-
-    def save(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG Image", "*.png")],
-            title="Save Edited Snip"
-        )
-        if path:
-            self.draw_image.save(path)
+    overlay.snipped.connect(on_snipped)
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
-    """Register global hotkey Ctrl+Shift+S to trigger the snipping overlay."""
+    """Register Ctrl+Shift+S as a global hotkey to trigger the snip overlay."""
+    def _trigger():
+        # Schedule on Qt main thread
+        from PyQt5.QtCore import QMetaObject, Qt as _Qt
+        QMetaObject.invokeMethod(
+            root, "_trigger_snip", _Qt.QueuedConnection
+        )
 
-    def trigger():
-        root.after(0, lambda: _start_snip(root, send_to_chat_callback))
+    # Attach the Qt-side slot to the main window
+    import types
+    def _trigger_snip(self):
+        trigger_snip(self, getattr(self, "attach_image", lambda b64, p: None))
 
-    keyboard.add_hotkey("ctrl+shift+s", trigger)
-
-
-def _start_snip(root, send_to_chat_callback):
-    def on_snip_done(image):
-        SnipToolbar(root, image, send_to_chat_callback)
-
-    SnippingOverlay(on_snip_done)
+    root._trigger_snip = types.MethodType(_trigger_snip, root)
+    keyboard.add_hotkey("ctrl+shift+s", _trigger)
