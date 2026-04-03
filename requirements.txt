@@ -5,3 +5,8 @@ dropbox>=11.0
 PyGithub>=2.0
 apscheduler>=3.10
 requests>=2.31
+# Snipping tool & OCR
+Pillow>=10.0
+pytesseract>=0.3.10
+langdetect>=1.0.9
+keyboard>=0.13.5
