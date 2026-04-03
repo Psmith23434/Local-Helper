@@ -1,14 +1,13 @@
 import sys
 import os
-import io
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog,
-    QProgressBar, QFrame
+    QProgressBar, QFrame, QCheckBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QPixmap, QImage, QFont, QDragEnterEvent, QDropEvent
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 
 # ── Dark theme ──────────────────────────────────────────────────────────────────
 
@@ -56,30 +55,23 @@ QTextEdit {
     font-family: Consolas, monospace;
     font-size: 12px;
 }
-QLabel#status {
-    color: #888;
-    font-size: 11px;
+QCheckBox { color: #aaa; font-size: 12px; spacing: 6px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #555; border-radius: 4px;
+    background: #2a2a2a;
 }
-QLabel#title_lbl {
-    color: #e0e0e0;
-    font-size: 15px;
-    font-weight: 600;
+QCheckBox::indicator:checked {
+    background: #6c3fc5; border-color: #6c3fc5;
 }
-QLabel#hint {
-    color: #555;
-    font-size: 11px;
-}
+QLabel#status { color: #888; font-size: 11px; }
+QLabel#title_lbl { color: #e0e0e0; font-size: 15px; font-weight: 600; }
+QLabel#hint { color: #555; font-size: 11px; }
 QProgressBar {
-    background-color: #2a2a2a;
-    border: none;
-    border-radius: 4px;
-    height: 6px;
-    text-align: center;
+    background-color: #2a2a2a; border: none;
+    border-radius: 4px; height: 6px;
 }
-QProgressBar::chunk {
-    background-color: #6c3fc5;
-    border-radius: 4px;
-}
+QProgressBar::chunk { background-color: #6c3fc5; border-radius: 4px; }
 """
 
 # ── OCR worker thread ─────────────────────────────────────────────────────
@@ -88,16 +80,17 @@ class OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, image_path, langs):
+    def __init__(self, image_path, langs, use_gpu):
         super().__init__()
         self.image_path = image_path
         self.langs = langs
+        self.use_gpu = use_gpu
 
     def run(self):
         try:
             import easyocr
             from PIL import Image
-            reader = easyocr.Reader(self.langs, gpu=False)
+            reader = easyocr.Reader(self.langs, gpu=self.use_gpu)
             img = np.array(Image.open(self.image_path).convert("RGB"))
             results = reader.readtext(img, detail=0, paragraph=True)
             self.finished.emit("\n".join(results) if results else "[No text detected]")
@@ -110,7 +103,6 @@ class OCRWorker(QThread):
 
 class DropLabel(QLabel):
     file_dropped = pyqtSignal(str)
-
     EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff"}
 
     def __init__(self):
@@ -118,35 +110,29 @@ class DropLabel(QLabel):
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumHeight(160)
-        self.setStyleSheet(
-            "QLabel { border: 2px dashed #3a3a3a; border-radius: 10px;"
-            "background: #1e1e1e; color: #555; font-size: 13px; }"
-        )
         self._set_idle()
 
     def _set_idle(self):
+        self.setPixmap(QPixmap())
         self.setText("\n\n\U0001f5bc  Drop an image here\nor click Browse\n")
+        self.setStyleSheet(
+            "QLabel{border:2px dashed #3a3a3a;border-radius:10px;"
+            "background:#1e1e1e;color:#555;font-size:13px;}"
+        )
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
             self.setStyleSheet(
-                "QLabel { border: 2px dashed #6c3fc5; border-radius: 10px;"
-                "background: #221a33; color: #a080e0; font-size: 13px; }"
+                "QLabel{border:2px dashed #6c3fc5;border-radius:10px;"
+                "background:#221a33;color:#a080e0;font-size:13px;}"
             )
 
     def dragLeaveEvent(self, _):
-        self.setStyleSheet(
-            "QLabel { border: 2px dashed #3a3a3a; border-radius: 10px;"
-            "background: #1e1e1e; color: #555; font-size: 13px; }"
-        )
+        self._set_idle()
 
     def dropEvent(self, e: QDropEvent):
         self._set_idle()
-        self.setStyleSheet(
-            "QLabel { border: 2px dashed #3a3a3a; border-radius: 10px;"
-            "background: #1e1e1e; color: #555; font-size: 13px; }"
-        )
         urls = e.mimeData().urls()
         if urls:
             path = urls[0].toLocalFile()
@@ -157,9 +143,14 @@ class DropLabel(QLabel):
         pix = QPixmap(path).scaledToWidth(380, Qt.SmoothTransformation)
         if pix.height() > 160:
             pix = pix.scaledToHeight(160, Qt.SmoothTransformation)
+        self.setText("")
+        self.setStyleSheet(
+            "QLabel{border:1px solid #333;border-radius:10px;"
+            "background:#1e1e1e;padding:4px;}"
+        )
         self.setPixmap(pix)
 
-# ── Language toggle buttons ─────────────────────────────────────────────────────
+# ── Language bar ───────────────────────────────────────────────────────────────────
 
 LANGS = [("Auto", ["en", "de"]), ("EN", ["en"]), ("DE", ["de"]),
          ("FR", ["fr"]), ("ES", ["es"]), ("ZH", ["ch_sim"])]
@@ -168,12 +159,12 @@ class LangBar(QWidget):
     def __init__(self):
         super().__init__()
         self._selected = ["en", "de"]
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(5)
         lbl = QLabel("Language:")
         lbl.setStyleSheet("color:#888;font-size:11px;")
-        layout.addWidget(lbl)
+        lay.addWidget(lbl)
         self._btns = {}
         for label, codes in LANGS:
             b = QPushButton(label)
@@ -187,9 +178,9 @@ class LangBar(QWidget):
                 "QPushButton:hover{background:#333;color:#e0e0e0;}"
             )
             b.clicked.connect(lambda _, c=codes, btn=b: self._pick(c, btn))
-            layout.addWidget(b)
+            lay.addWidget(b)
             self._btns[label] = b
-        layout.addStretch()
+        lay.addStretch()
 
     def _pick(self, codes, clicked_btn):
         self._selected = codes
@@ -206,10 +197,30 @@ class EasyOCRTester(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EasyOCR Tester")
-        self.setMinimumSize(520, 640)
+        self.setMinimumSize(520, 660)
         self._image_path = None
         self._worker = None
         self._build_ui()
+        self._detect_gpu()
+
+    def _detect_gpu(self):
+        """Check if CUDA is available and update the GPU checkbox label."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                name = torch.cuda.get_device_name(0)
+                self.gpu_check.setText(f"Use GPU  —  {name}")
+                self.gpu_check.setEnabled(True)
+                self.gpu_check.setStyleSheet("color:#6daa45;font-size:12px;spacing:6px;"
+                    "QCheckBox::indicator{width:16px;height:16px;border:1px solid #555;"
+                    "border-radius:4px;background:#2a2a2a;}"
+                    "QCheckBox::indicator:checked{background:#6c3fc5;border-color:#6c3fc5;}")
+            else:
+                self.gpu_check.setText("Use GPU  —  not available (CUDA not found)")
+                self.gpu_check.setEnabled(False)
+        except ImportError:
+            self.gpu_check.setText("Use GPU  —  torch not installed")
+            self.gpu_check.setEnabled(False)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -219,67 +230,79 @@ class EasyOCRTester(QWidget):
         title = QLabel("EasyOCR Tester")
         title.setObjectName("title_lbl")
         root.addWidget(title)
-
-        hint = QLabel("Test EasyOCR on any image — drop, browse, or paste a path")
+        hint = QLabel("Test EasyOCR on any image — drop, browse, or use Browse button")
         hint.setObjectName("hint")
         root.addWidget(hint)
 
+        # Drop zone card
         drop_card = QFrame(); drop_card.setObjectName("card")
         dc_lay = QVBoxLayout(drop_card); dc_lay.setContentsMargins(12, 12, 12, 12)
         self.drop_zone = DropLabel()
         self.drop_zone.file_dropped.connect(self._load_image)
         dc_lay.addWidget(self.drop_zone)
-
         browse_row = QHBoxLayout()
-        self.browse_btn = QPushButton("\U0001f4c2  Browse Image")
-        self.browse_btn.clicked.connect(self._browse)
-        self.clear_btn = QPushButton("✕  Clear")
-        self.clear_btn.setObjectName("danger")
-        self.clear_btn.clicked.connect(self._clear)
-        browse_row.addWidget(self.browse_btn)
-        browse_row.addWidget(self.clear_btn)
+        browse_btn = QPushButton("\U0001f4c2  Browse Image")
+        browse_btn.clicked.connect(self._browse)
+        clear_btn = QPushButton("✕  Clear")
+        clear_btn.setObjectName("danger")
+        clear_btn.clicked.connect(self._clear)
+        browse_row.addWidget(browse_btn)
+        browse_row.addWidget(clear_btn)
         browse_row.addStretch()
         dc_lay.addLayout(browse_row)
         root.addWidget(drop_card)
 
+        # Options row
+        opts_row = QHBoxLayout()
         self.lang_bar = LangBar()
-        root.addWidget(self.lang_bar)
+        opts_row.addWidget(self.lang_bar, stretch=1)
+        root.addLayout(opts_row)
 
+        # GPU checkbox
+        self.gpu_check = QCheckBox("Use GPU  —  detecting...")
+        self.gpu_check.setChecked(False)
+        self.gpu_check.setEnabled(False)
+        root.addWidget(self.gpu_check)
+
+        # Run button
         self.run_btn = QPushButton("⚡  Extract Text")
         self.run_btn.setObjectName("primary")
         self.run_btn.setFixedHeight(40)
         self.run_btn.clicked.connect(self._run_ocr)
         root.addWidget(self.run_btn)
 
+        # Progress + status
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
         root.addWidget(self.progress)
-
         self.status_lbl = QLabel("No image loaded.")
         self.status_lbl.setObjectName("status")
         root.addWidget(self.status_lbl)
 
+        # Result card
         result_card = QFrame(); result_card.setObjectName("card")
-        rc_lay = QVBoxLayout(result_card); rc_lay.setContentsMargins(12, 12, 12, 12); rc_lay.setSpacing(6)
+        rc_lay = QVBoxLayout(result_card)
+        rc_lay.setContentsMargins(12, 12, 12, 12)
+        rc_lay.setSpacing(6)
         res_hdr = QHBoxLayout()
         res_lbl = QLabel("Extracted Text")
         res_lbl.setStyleSheet("font-weight:600;font-size:12px;color:#aaa;")
-        self.copy_btn = QPushButton("\U0001f4cb Copy")
-        self.copy_btn.setFixedHeight(26)
-        self.copy_btn.setStyleSheet(
+        copy_btn = QPushButton("\U0001f4cb Copy")
+        copy_btn.setFixedHeight(26)
+        copy_btn.setStyleSheet(
             "QPushButton{background:#2a2a2a;color:#888;border:1px solid #333;"
             "border-radius:5px;font-size:11px;padding:0 10px;}"
             "QPushButton:hover{background:#333;color:#e0e0e0;}"
         )
-        self.copy_btn.clicked.connect(self._copy)
+        copy_btn.clicked.connect(self._copy)
         res_hdr.addWidget(res_lbl)
         res_hdr.addStretch()
-        res_hdr.addWidget(self.copy_btn)
+        res_hdr.addWidget(copy_btn)
         rc_lay.addLayout(res_hdr)
         self.result_box = QTextEdit()
         self.result_box.setPlaceholderText("OCR result will appear here…")
-        self.result_box.setMinimumHeight(160)
+        self.result_box.setMinimumHeight(180)
         rc_lay.addWidget(self.result_box)
         root.addWidget(result_card)
 
@@ -310,10 +333,14 @@ class EasyOCRTester(QWidget):
         if self._worker and self._worker.isRunning():
             return
         langs = self.lang_bar.get_langs()
+        use_gpu = self.gpu_check.isChecked() and self.gpu_check.isEnabled()
+        mode_str = "GPU" if use_gpu else "CPU"
         self.run_btn.setEnabled(False)
         self.progress.show()
-        self.status_lbl.setText(f"Running EasyOCR ({', '.join(langs)}) — first run loads model…")
-        self._worker = OCRWorker(self._image_path, langs)
+        self.status_lbl.setText(
+            f"Running EasyOCR [{mode_str}] ({', '.join(langs)}) — first run loads model…"
+        )
+        self._worker = OCRWorker(self._image_path, langs, use_gpu)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
