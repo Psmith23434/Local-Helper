@@ -1,12 +1,21 @@
 """Run this once to pre-download all EasyOCR language models."""
 import easyocr
 
-LANGS = ["en", "de", "fr", "es", "it", "nl", "pt", "ru", "pl", "cs", "sv"]
+# EasyOCR restriction: Cyrillic languages must be in a separate reader from Latin ones.
+GROUPS = [
+    # Latin group
+    ["en", "de", "fr", "es", "it", "nl", "pt", "pl", "cs", "sv"],
+    # Cyrillic group (must include 'en')
+    ["ru", "en"],
+]
 
-print(f"Downloading EasyOCR models for: {LANGS}")
+print("Downloading EasyOCR models in language groups...")
 print("This may take a while (~500MB-1GB total). Please wait...\n")
 
-reader = easyocr.Reader(LANGS, gpu=False)
+for i, langs in enumerate(GROUPS, 1):
+    print(f"[{i}/{len(GROUPS)}] Downloading group: {langs}")
+    easyocr.Reader(langs, gpu=False)
+    print(f"  Done.\n")
 
-print("\nAll models downloaded successfully!")
+print("All models downloaded successfully!")
 print("Models are stored in: C:\\Users\\<you>\\.EasyOCR\\model\\")
