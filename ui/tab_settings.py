@@ -42,12 +42,11 @@ class SettingsTab(QWidget):
         h.setStyleSheet(f"color:{d['text']};")
         cl.addWidget(h)
 
-        # ── Appearance ───────────────────────────────────────────────
+        # ── Appearance ────────────────────────────────────────────────────────
         grp_appear = self._group("Appearance")
         gl = QVBoxLayout(grp_appear)
         gl.setSpacing(10)
 
-        # Theme
         row = QHBoxLayout()
         row.addWidget(self._lbl("Theme"))
         self.theme_combo = QComboBox()
@@ -62,7 +61,6 @@ class SettingsTab(QWidget):
         row.addWidget(btn_apply_theme)
         gl.addLayout(row)
 
-        # Font size
         row2 = QHBoxLayout()
         row2.addWidget(self._lbl("Font size"))
         self.font_slider = QSlider(Qt.Horizontal)
@@ -84,7 +82,6 @@ class SettingsTab(QWidget):
         row2.addWidget(btn_apply_font)
         gl.addLayout(row2)
 
-        # Layout switcher
         row3 = QHBoxLayout()
         row3.addWidget(self._lbl("Layout"))
         self.layout_combo = QComboBox()
@@ -106,7 +103,7 @@ class SettingsTab(QWidget):
 
         cl.addWidget(grp_appear)
 
-        # ── API / Proxy ─────────────────────────────────────────────
+        # ── API / Proxy ───────────────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
@@ -130,7 +127,44 @@ class SettingsTab(QWidget):
         al.addWidget(btn_save_api)
         cl.addWidget(grp_api)
 
-        # ── GitHub ───────────────────────────────────────────────
+        # ── Translation ───────────────────────────────────────────────────────
+        grp_trans = self._group("Translation")
+        tl = QVBoxLayout(grp_trans)
+        tl.setSpacing(10)
+
+        tl.addWidget(self._lbl(
+            "LibreTranslate server URL  "
+            "(self-hosted — default: localhost:5000; change to VPS address when ready)"
+        ))
+        self.lt_url = QLineEdit()
+        self.lt_url.setPlaceholderText("http://localhost:5000")
+        self._load_config_value("LIBRETRANSLATE_URL", self.lt_url)
+        tl.addWidget(self.lt_url)
+
+        tl.addWidget(self._lbl("Default target language (shown in the Translate panel)"))
+        self.trans_lang_combo = QComboBox()
+        self.trans_lang_combo.setFixedWidth(220)
+        try:
+            import translator as TR
+            self.trans_lang_combo.addItems(TR.LANG_NAMES[1:])  # skip Auto-detect
+            default = TR.code_to_name(
+                self._read_config_str("TRANSLATE_TARGET_LANG", "en")
+            )
+            idx = self.trans_lang_combo.findText(default)
+            if idx >= 0:
+                self.trans_lang_combo.setCurrentIndex(idx)
+        except Exception:
+            self.trans_lang_combo.addItem("English")
+        tl.addWidget(self.trans_lang_combo)
+
+        btn_save_trans = QPushButton("Save to config.py")
+        btn_save_trans.setStyleSheet(accent_btn_qss())
+        btn_save_trans.setFixedWidth(160)
+        btn_save_trans.clicked.connect(self._save_trans)
+        tl.addWidget(btn_save_trans)
+        cl.addWidget(grp_trans)
+
+        # ── GitHub ────────────────────────────────────────────────────────────
         grp_gh = self._group("GitHub")
         ghl = QVBoxLayout(grp_gh)
         ghl.setSpacing(10)
@@ -146,7 +180,7 @@ class SettingsTab(QWidget):
         ghl.addWidget(btn_save_gh)
         cl.addWidget(grp_gh)
 
-        # ── Web Search ───────────────────────────────────────────
+        # ── Web Search ────────────────────────────────────────────────────────
         grp_ws = self._group("Web Search")
         wl = QVBoxLayout(grp_ws)
         wl.setSpacing(10)
@@ -162,7 +196,7 @@ class SettingsTab(QWidget):
         wl.addWidget(btn_save_ws)
         cl.addWidget(grp_ws)
 
-        # ── Danger zone ───────────────────────────────────────────
+        # ── Danger zone ───────────────────────────────────────────────────────
         grp_danger = self._group("Danger Zone")
         grp_danger.setStyleSheet(
             f"QGroupBox{{border:1px solid {d['red']};border-radius:8px;"
@@ -187,14 +221,14 @@ class SettingsTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    # ── Helpers ───────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
     def _group(self, title: str) -> QGroupBox:
-        g = QGroupBox(title)
-        return g
+        return QGroupBox(title)
 
     def _lbl(self, text: str, muted: bool = True) -> QLabel:
         d = T()
         l = QLabel(text)
+        l.setWordWrap(True)
         l.setStyleSheet(f"color:{ d['muted'] if muted else d['text']};font-size:12px;background:transparent;")
         return l
 
@@ -212,23 +246,39 @@ class SettingsTab(QWidget):
         except Exception:
             return default
 
+    def _read_config_str(self, key: str, default: str) -> str:
+        try:
+            import config
+            return str(getattr(config, key, default))
+        except Exception:
+            return default
+
     def _write_config(self, updates: dict):
         try:
             with open("config.py", "r", encoding="utf-8") as f:
                 lines = f.readlines()
             new_lines = []
+            written_keys = set()
             for line in lines:
-                written = False
+                matched = False
                 for key, val in updates.items():
                     if line.strip().startswith(key + " ") or line.strip().startswith(key + "="):
                         if isinstance(val, str):
                             new_lines.append(f'{key} = "{val}"\n')
                         else:
                             new_lines.append(f'{key} = {val}\n')
-                        written = True
+                        written_keys.add(key)
+                        matched = True
                         break
-                if not written:
+                if not matched:
                     new_lines.append(line)
+            # Append any keys that weren't found (new keys)
+            for key, val in updates.items():
+                if key not in written_keys:
+                    if isinstance(val, str):
+                        new_lines.append(f'\n{key} = "{val}"\n')
+                    else:
+                        new_lines.append(f'\n{key} = {val}\n')
             with open("config.py", "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
             return True
@@ -257,6 +307,23 @@ class SettingsTab(QWidget):
         })
         if ok:
             QMessageBox.information(self, "Saved", "API settings saved to config.py.\nRestart the app to apply.")
+
+    def _save_trans(self):
+        try:
+            import translator as TR
+            code = TR.name_to_code(self.trans_lang_combo.currentText())
+        except Exception:
+            code = "en"
+        ok = self._write_config({
+            "LIBRETRANSLATE_URL":    self.lt_url.text().strip() or "http://localhost:5000",
+            "TRANSLATE_TARGET_LANG": code,
+        })
+        if ok:
+            QMessageBox.information(
+                self, "Saved",
+                "Translation settings saved.\n"
+                "The new default language applies next time you open a Translate panel."
+            )
 
     def _save_gh(self):
         ok = self._write_config({"GITHUB_TOKEN": self.gh_token.text().strip()})

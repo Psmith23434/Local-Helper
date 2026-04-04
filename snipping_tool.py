@@ -52,8 +52,6 @@ class SnipOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(QCursor(Qt.CrossCursor))
 
-        # Use a pre-captured screenshot if provided (avoids grabbing before
-        # the main window has fully hidden), otherwise grab now.
         if screenshot is not None:
             self._bg = screenshot
         else:
@@ -78,7 +76,7 @@ class SnipOverlay(QWidget):
         painter.drawText(
             self.rect(),
             Qt.AlignTop | Qt.AlignHCenter,
-            "  Drag to select area   \u00b7   ESC or Right-click to cancel  "
+            "  Drag to select area   ·   ESC or Right-click to cancel  "
         )
 
     def keyPressEvent(self, event):
@@ -168,11 +166,11 @@ class SnipToolbar(QDialog):
         self._selected_lang = "auto"
         self._ocr_mode = "quick"
         self.setWindowTitle("Snip Toolbar")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(540)
         self._build_ui()
         self._detect_gpu()
 
-    # ── GPU detection for EasyOCR ────────────────────────────────────────────
+    # ── GPU detection ─────────────────────────────────────────────────────────
     def _detect_gpu(self):
         try:
             import torch
@@ -201,7 +199,7 @@ class SnipToolbar(QDialog):
         root.setSpacing(10)
         root.setContentsMargins(14, 14, 14, 14)
 
-        preview_pix = pil_to_qpixmap(self.image).scaledToWidth(490, Qt.SmoothTransformation)
+        preview_pix = pil_to_qpixmap(self.image).scaledToWidth(510, Qt.SmoothTransformation)
         lbl_preview = QLabel()
         lbl_preview.setPixmap(preview_pix)
         lbl_preview.setAlignment(Qt.AlignCenter)
@@ -215,7 +213,7 @@ class SnipToolbar(QDialog):
         self.rb_quick = QRadioButton("⚡ Quick (EasyOCR)")
         self.rb_ai    = QRadioButton("🤖 AI OCR")
         self.rb_quick.setChecked(True)
-        self.rb_quick.toggled.connect(self._toggle_lang_bar)
+        self.rb_quick.toggled.connect(self._toggle_ocr_options)
         grp = QButtonGroup(self)
         grp.addButton(self.rb_quick)
         grp.addButton(self.rb_ai)
@@ -241,7 +239,7 @@ class SnipToolbar(QDialog):
                 f"QPushButton{{background:{d['surface2']};color:{d['muted']};"
                 f"border:1px solid {d['border']};border-radius:4px;font-size:10px;padding:0 6px;}}"
                 f"QPushButton:checked{{background:{d['accent']};color:#fff;border-color:{d['accent']};}}"
-                f"QPushButton:hover{{background:{d['surface3']};color:{d['text']};}}"
+                f"QPushButton:hover{{background:{d.get('surface3', d['surface2'])};color:{d['text']};}}"
             )
             btn.clicked.connect(lambda _, c=code: self._select_lang(c))
             lang_row.addWidget(btn)
@@ -249,7 +247,7 @@ class SnipToolbar(QDialog):
         lang_row.addStretch()
         root.addWidget(self.lang_widget)
 
-        # ── GPU checkbox (EasyOCR only) ─────────────────────────────────────
+        # GPU checkbox
         gpu_row = QHBoxLayout()
         self.gpu_check = QCheckBox("Use GPU  —  detecting…")
         self.gpu_check.setChecked(False)
@@ -285,7 +283,7 @@ class SnipToolbar(QDialog):
             b.setStyleSheet(accent_btn_qss() if "Send" in text else
                 f"QPushButton{{background:{d['surface2']};color:{d['text']};"
                 f"border:1px solid {d['border']};border-radius:6px;padding:6px 12px;font-size:11px;}}"
-                f"QPushButton:hover{{background:{d['surface3']};}}"
+                f"QPushButton:hover{{background:{d.get('surface3', d['surface2'])};}}"
             )
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(fn)
@@ -309,7 +307,12 @@ class SnipToolbar(QDialog):
         self.result_box.hide()
         root.addWidget(self.result_box)
 
-    def _toggle_lang_bar(self, quick_checked):
+        # ── Translate panel ───────────────────────────────────────────────────
+        from ui.translate_widget import TranslateWidget
+        self._translate = TranslateWidget(parent=self, collapsed=True)
+        root.addWidget(self._translate)
+
+    def _toggle_ocr_options(self, quick_checked):
         self.lang_widget.setVisible(quick_checked)
         self.gpu_widget.setVisible(quick_checked)
         self._ocr_mode = "quick" if quick_checked else "ai"
@@ -336,6 +339,9 @@ class SnipToolbar(QDialog):
         self.result_box.setPlainText(text)
         self.result_lbl.setText("Extracted Text (editable):")
         self.result_box.show()
+        # Auto-fill the translate panel with the result
+        if text and not text.startswith("[Error]") and not text.startswith("[No text"):
+            self._translate.set_source_text(text)
         self.adjustSize()
 
     def _save(self):
@@ -357,7 +363,7 @@ class SnipToolbar(QDialog):
 
 def trigger_snip(parent_widget, send_to_chat_callback):
     """Launch the snip overlay. Must be called from the Qt main thread.
-    
+
     FIX: hides the parent window, waits 150 ms for Windows to repaint
     the desktop, THEN grabs the screen — eliminates the black-frame glitch.
     """
@@ -365,7 +371,6 @@ def trigger_snip(parent_widget, send_to_chat_callback):
     if _active_overlay is not None:
         return
 
-    # Hide parent window and wait before grabbing screen
     top = None
     if parent_widget is not None:
         top = parent_widget.window()

@@ -32,7 +32,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize, QTimer
 from PyQt5.QtGui  import QPixmap, QColor, QPainter, QPen, QScreen
 
-# ── Colour tokens (match chat_panel dark theme) ─────────────────────────────
+from ui.translate_widget import TranslateWidget
+
+# ── Colour tokens ─────────────────────────────────────────────────────────────
 D = {
     "bg":        "#0d0d0d",
     "surface":   "#141414",
@@ -129,7 +131,7 @@ QProgressBar {{
 QProgressBar::chunk {{ background: {D['accent']}; border-radius: 4px; }}
 """
 
-# ── Language definitions ─────────────────────────────────────────────────────
+# ── Language definitions ──────────────────────────────────────────────────────
 LANGS = [
     ("Auto",   ["en", "de"]),
     ("EN",     ["en"]),
@@ -146,7 +148,7 @@ LANGS = [
 ]
 
 
-# ── OCR worker ───────────────────────────────────────────────────────────────
+# ── OCR worker ────────────────────────────────────────────────────────────────
 class OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
@@ -174,7 +176,7 @@ class OCRWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── HiDPI-safe QPixmap → PIL ────────────────────────────────────────────────
+# ── HiDPI-safe QPixmap → PIL ──────────────────────────────────────────────────
 def _qpixmap_to_pil(pixmap):
     from PIL import Image
     qimg   = pixmap.toImage().convertToFormat(pixmap.toImage().Format_RGB888)
@@ -187,7 +189,7 @@ def _qpixmap_to_pil(pixmap):
     return Image.fromarray(arr, "RGB")
 
 
-# ── Screen-snip overlay ─────────────────────────────────────────────────────
+# ── Screen-snip overlay ───────────────────────────────────────────────────────
 class SnipOverlay(QWidget):
     snipped   = pyqtSignal(object)   # PIL Image
     cancelled = pyqtSignal()
@@ -264,7 +266,7 @@ class SnipOverlay(QWidget):
             self.snipped.emit(_qpixmap_to_pil(self._screenshot.copy(phys)))
 
 
-# ── Drop zone label ─────────────────────────────────────────────────────────
+# ── Drop zone label ───────────────────────────────────────────────────────────
 class _DropZone(QLabel):
     file_dropped = pyqtSignal(str)
     EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff"}
@@ -329,7 +331,7 @@ class _DropZone(QLabel):
     def reset(self): self._idle()
 
 
-# ── Language bar ────────────────────────────────────────────────────────────
+# ── Language bar ──────────────────────────────────────────────────────────────
 class _LangBar(QWidget):
     def __init__(self):
         super().__init__()
@@ -368,9 +370,9 @@ class _LangBar(QWidget):
     def get(self): return self._selected
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Main OCRWidget — embed as a tab or instantiate directly
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 class OCRWidget(QWidget):
     """Full OCR panel.  `text_ready` emits extracted text (for chat integration)."""
     text_ready = pyqtSignal(str)
@@ -386,7 +388,7 @@ class OCRWidget(QWidget):
         self._build_ui()
         self._detect_gpu()
 
-    # ── GPU probe ───────────────────────────────────────────────────────────
+    # ── GPU probe ─────────────────────────────────────────────────────────────
     def _detect_gpu(self):
         try:
             import torch
@@ -516,7 +518,22 @@ class OCRWidget(QWidget):
         rc.addWidget(self._result_box)
         root.addWidget(result_card)
 
-    # ── File handling
+        # ── Translate panel (below result card) ───────────────────────────────
+        self._translate = TranslateWidget(parent=self, collapsed=True)
+        self._translate.text_ready.connect(self.text_ready)
+        root.addWidget(self._translate)
+
+        # "Fill from OCR" shortcut button inside result card header
+        self._fill_trans_btn = QPushButton("🌐 Fill Translate")
+        self._fill_trans_btn.setFixedHeight(26)
+        self._fill_trans_btn.setObjectName("InsertBtn")
+        self._fill_trans_btn.setToolTip("Copy extracted text into the Translate panel below")
+        self._fill_trans_btn.clicked.connect(self._fill_translate)
+        res_hdr.addWidget(self._fill_trans_btn)
+
+        root.addStretch()
+
+    # ── File handling ─────────────────────────────────────────────────────────
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image", "",
@@ -538,13 +555,11 @@ class OCRWidget(QWidget):
         self._result_box.clear()
         self._status.setText("No image loaded.")
 
-    # ── Snip — FIX: hide window first, wait 150 ms, THEN grab screen
+    # ── Snip — FIX: hide window first, wait 150 ms, THEN grab screen ──────────
     def _start_snip(self):
         top = self.window()
         top.hide()
         QApplication.processEvents()
-        # Wait for Windows to actually repaint the desktop behind the window
-        # before grabbing the screen — avoids the black-frame glitch.
         QTimer.singleShot(150, lambda: self._grab_and_snip(top))
 
     def _grab_and_snip(self, top):
@@ -571,7 +586,7 @@ class OCRWidget(QWidget):
             self.window().show()
         self._status.setText("Snip cancelled.")
 
-    # ── OCR
+    # ── OCR ───────────────────────────────────────────────────────────────────
     def _run(self):
         source = self._snip_image if self._snip_image else self._image_path
         if source is None:
@@ -604,7 +619,7 @@ class OCRWidget(QWidget):
         self._progress.hide()
         self._run_btn.setEnabled(True)
 
-    # ── Actions
+    # ── Actions ───────────────────────────────────────────────────────────────
     def _copy(self):
         txt = self._result_box.toPlainText()
         if txt:
@@ -618,9 +633,14 @@ class OCRWidget(QWidget):
             self.text_ready.emit(txt)
             self._status.setText("✓ Text sent to Chat input.")
 
-    # ── Public API for chat_panel inline snip
+    def _fill_translate(self):
+        """Push current OCR text into the translate panel and expand it."""
+        txt = self._result_box.toPlainText().strip()
+        if txt:
+            self._translate.set_source_text(txt)
+
+    # ── Public API for chat_panel inline snip ─────────────────────────────────
     def start_snip_for_chat(self, callback, use_gpu: bool = False):
-        """Called by General Chat snip button. Hides window, waits, grabs, snips."""
         top = self.window()
         top.hide()
         QApplication.processEvents()

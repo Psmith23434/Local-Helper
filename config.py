@@ -48,3 +48,9 @@ FILES_DIR = "space_files"
 
 # Templates directory
 TEMPLATES_DIR = "templates"
+
+# ── Translation ───────────────────────────────
+# LibreTranslate server URL (self-hosted; change to VPS address when ready)
+LIBRETRANSLATE_URL = "http://localhost:5000"
+# Default target language for the translate panel
+TRANSLATE_TARGET_LANG = "en"
