@@ -6,7 +6,8 @@ import tempfile
 
 from PyQt5.QtWidgets import (
     QMainWindow, QStatusBar, QMessageBox, QApplication,
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
+    QMenuBar, QAction
 )
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtGui import QPalette, QColor, QFont, QFontDatabase
@@ -14,10 +15,8 @@ from ui.theme import get as T, set_theme
 from ui.styles import global_qss
 
 
-# ── Font loader — downloads Cinzel TTF once, caches in temp dir ──────────────
+# ── Font loader ───────────────────────────────────────────────────────────────
 _CINZEL_FONT_ID = None
-
-# Direct TTF download from GitHub (no API, works offline after first run)
 _CINZEL_TTF_URL = (
     "https://github.com/google/fonts/raw/main/ofl/cinzel/"
     "Cinzel%5Bwght%5D.ttf"
@@ -25,11 +24,9 @@ _CINZEL_TTF_URL = (
 
 
 def _load_cinzel() -> str:
-    """Download Cinzel TTF once, register with Qt. Returns family name."""
     global _CINZEL_FONT_ID
     if _CINZEL_FONT_ID is not None:
         return _CINZEL_FONT_ID
-
     cache_path = os.path.join(tempfile.gettempdir(), "cinzel_variable.ttf")
     try:
         if not os.path.exists(cache_path):
@@ -41,9 +38,7 @@ def _load_cinzel() -> str:
                 _CINZEL_FONT_ID = families[0]
                 return _CINZEL_FONT_ID
     except Exception:
-        pass  # no internet / any error → fall through to system fonts
-
-    # Static call (PyQt5 ≥5.15.8 made hasFamily a static method)
+        pass
     for f in ("Palatino Linotype", "Book Antiqua", "Palatino",
               "Georgia", "Times New Roman"):
         try:
@@ -52,7 +47,6 @@ def _load_cinzel() -> str:
                 return f
         except Exception:
             pass
-
     _CINZEL_FONT_ID = "Georgia"
     return "Georgia"
 
@@ -73,11 +67,14 @@ def apply_dark_palette(widget):
     widget.setPalette(p)
 
 
-# ── Custom title bar ──────────────────────────────────────────────────────────
+# ── Title bar ───────────────────────────────────────────────────────────────
 
 class TitleBar(QWidget):
-    """Drag-able title bar with fancy centered app name + window controls."""
-
+    """
+    Single unified header row:
+      [File][View][Help]   <stretch>   Local Helper   <stretch>   [⎯][□][✕]
+    The native QMenuBar is hidden; menus are embedded directly here.
+    """
     HEIGHT = 42
 
     def __init__(self, parent: QMainWindow):
@@ -88,6 +85,56 @@ class TitleBar(QWidget):
         self._display_font = _load_cinzel()
         self._build()
 
+    # ── QSS helper ──────────────────────────────────────────────────────────
+    def _menu_qss(self, d: dict) -> str:
+        bg   = d["surface2"]
+        text = d["text"]
+        mut  = d["muted"]
+        acc  = d["accent"]
+        h    = self.HEIGHT
+        return (
+            f"QMenuBar{{"
+            f"  background:{bg};"
+            f"  color:{text};"
+            f"  border:none;"
+            f"  font-size:12px;"
+            f"  spacing:0px;"
+            f"}}"
+            f"QMenuBar::item{{"
+            f"  background:transparent;"
+            f"  color:{mut};"
+            f"  padding:0 10px;"
+            f"  height:{h}px;"
+            f"}}"
+            f"QMenuBar::item:selected{{"
+            f"  background:{d.get('surface3', '#1f1f1f')};"
+            f"  color:{text};"
+            f"}}"
+            f"QMenuBar::item:pressed{{"
+            f"  background:{d.get('surface3', '#1f1f1f')};"
+            f"  color:{acc};"
+            f"}}"
+            f"QMenu{{"
+            f"  background:{d['surface']};"
+            f"  color:{text};"
+            f"  border:1px solid {d['border']};"
+            f"  padding:4px 0;"
+            f"}}"
+            f"QMenu::item{{"
+            f"  padding:5px 20px;"
+            f"}}"
+            f"QMenu::item:selected{{"
+            f"  background:{d.get('surface3','#1f1f1f')};"
+            f"  color:{acc};"
+            f"}}"
+            f"QMenu::separator{{"
+            f"  height:1px;"
+            f"  background:{d['border']};"
+            f"  margin:3px 10px;"
+            f"}}"
+        )
+
+    # ── Build ───────────────────────────────────────────────────────────────
     def _build(self):
         d = T()
         self.setStyleSheet(
@@ -95,17 +142,23 @@ class TitleBar(QWidget):
             "border-bottom:1px solid #111;"
         )
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setContentsMargins(0, 0, 4, 0)
         lay.setSpacing(0)
 
-        # Left spacer mirrors the 3 right-side buttons so title is truly centred
-        self._left_spacer = QWidget()
-        self._left_spacer.setFixedWidth(128)
-        lay.addWidget(self._left_spacer)
+        # ── Inline menu bar (left) ────────────────────────────────────────
+        self._mb = QMenuBar(self)
+        self._mb.setStyleSheet(self._menu_qss(d))
+        self._mb.setFixedHeight(self.HEIGHT)
+        self._mb.setSizePolicy(
+            self._mb.sizePolicy().horizontalPolicy(),
+            self._mb.sizePolicy().verticalPolicy()
+        )
+        # Menus are populated by TabbedLayout via populate_menus()
+        lay.addWidget(self._mb)
 
         lay.addStretch()
 
-        # ── App title ─────────────────────────────────────────────────────
+        # ── Centered title ─────────────────────────────────────────────
         self._title_lbl = QLabel("Local Helper")
         title_font = QFont(self._display_font, 13)
         title_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.5)
@@ -113,18 +166,19 @@ class TitleBar(QWidget):
         self._title_lbl.setFont(title_font)
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setStyleSheet(
-            f"color:{d.get('accent', '#2dd4bf')};background:transparent;"
+            f"color:{d.get('accent', '#7c6af7')};background:transparent;"
         )
         lay.addWidget(self._title_lbl)
 
         lay.addStretch()
 
-        # ── Window controls ──────────────────────────────────────────────────
+        # ── Window controls (right) ───────────────────────────────────
+        h = self.HEIGHT
         btn_css = (
             "QPushButton{{"
             "background:transparent;color:{fg};"
             "border:none;font-size:14px;"
-            "min-width:40px;min-height:" + str(self.HEIGHT) + "px;padding:0;}}"
+            f"min-width:40px;min-height:{h}px;padding:0;}}"
             "QPushButton:hover{{background:{hover};}}"
         )
         self._btn_min = QPushButton("⎯")
@@ -146,6 +200,12 @@ class TitleBar(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
 
+    # ── Public: called by TabbedLayout / SidebarLayout after tab widget exists ──
+    def menu_bar(self) -> QMenuBar:
+        """Return the embedded QMenuBar so layouts can add their menus."""
+        return self._mb
+
+    # ── Maximize toggle ────────────────────────────────────────────────────
     def _toggle_max(self):
         if self._win.isMaximized():
             self._win.showNormal()
@@ -154,6 +214,7 @@ class TitleBar(QWidget):
             self._win.showMaximized()
             self._btn_max.setText("❐")
 
+    # ── Drag to move ─────────────────────────────────────────────────────
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._drag_pos = event.globalPos() - self._win.frameGeometry().topLeft()
@@ -175,6 +236,7 @@ class TitleBar(QWidget):
         if event.button() == Qt.LeftButton:
             self._toggle_max()
 
+    # ── Theme update ──────────────────────────────────────────────────────
     def update_theme(self):
         d = T()
         self.setStyleSheet(
@@ -182,8 +244,9 @@ class TitleBar(QWidget):
             "border-bottom:1px solid #111;"
         )
         self._title_lbl.setStyleSheet(
-            f"color:{d.get('accent', '#2dd4bf')};background:transparent;"
+            f"color:{d.get('accent', '#7c6af7')};background:transparent;"
         )
+        self._mb.setStyleSheet(self._menu_qss(d))
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -196,6 +259,8 @@ class MainWindow(QMainWindow):
         self.resize(1320, 860)
         self._layout_name = layout
         self._apply_style()
+        # Hide the native QMenuBar — menus live inside TitleBar._mb
+        self.menuBar().setVisible(False)
         self._build_shell(layout)
         self._build_statusbar()
 
