@@ -157,7 +157,11 @@ LANGUAGES = [
 
 
 class SnipToolbar(QDialog):
-    """Post-snip action dialog — Send to AI / OCR / Save / Copy."""
+    """Post-snip action dialog — Send to AI / OCR / Save / Copy / Re-snip."""
+
+    # Signal emitted when the user clicks Re-snip so the caller can
+    # dismiss this dialog and launch a fresh overlay.
+    resnip_requested = pyqtSignal()
 
     def __init__(self, image, send_to_chat_callback, parent=None):
         super().__init__(parent, Qt.WindowStaysOnTopHint)
@@ -288,6 +292,20 @@ class SnipToolbar(QDialog):
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(fn)
             btn_row.addWidget(b)
+
+        # ── Re-snip button ────────────────────────────────────────────────────
+        btn_resnip = QPushButton("✂ Re-snip")
+        btn_resnip.setStyleSheet(
+            f"QPushButton{{background:{d['surface2']};color:{d.get('accent', '#2dd4bf')};"
+            f"border:1px solid {d.get('accent', '#2dd4bf')};border-radius:6px;"
+            f"padding:6px 12px;font-size:11px;}}"
+            f"QPushButton:hover{{background:{d.get('accent', '#2dd4bf')};color:#fff;}}"
+        )
+        btn_resnip.setCursor(Qt.PointingHandCursor)
+        btn_resnip.setToolTip("Close this panel and take a new snip")
+        btn_resnip.clicked.connect(self._do_resnip)
+        btn_row.addWidget(btn_resnip)
+
         btn_row.addStretch()
         root.addLayout(btn_row)
 
@@ -339,7 +357,6 @@ class SnipToolbar(QDialog):
         self.result_box.setPlainText(text)
         self.result_lbl.setText("Extracted Text (editable):")
         self.result_box.show()
-        # Auto-fill the translate panel with the result
         if text and not text.startswith("[Error]") and not text.startswith("[No text"):
             self._translate.set_source_text(text)
         self.adjustSize()
@@ -358,15 +375,16 @@ class SnipToolbar(QDialog):
         self.result_lbl.setText("Image copied to clipboard.")
         self.result_lbl.show()
 
+    def _do_resnip(self):
+        """Dismiss this toolbar and immediately launch a new snip overlay."""
+        self.resnip_requested.emit()
+        self.reject()
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def trigger_snip(parent_widget, send_to_chat_callback):
-    """Launch the snip overlay. Must be called from the Qt main thread.
-
-    FIX: hides the parent window, waits 150 ms for Windows to repaint
-    the desktop, THEN grabs the screen — eliminates the black-frame glitch.
-    """
+    """Launch the snip overlay. Must be called from the Qt main thread."""
     global _active_overlay
     if _active_overlay is not None:
         return
@@ -387,6 +405,12 @@ def trigger_snip(parent_widget, send_to_chat_callback):
             if top is not None:
                 top.show()
             toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
+
+            # Re-snip: close toolbar, hide app again, take a new snip
+            def on_resnip():
+                QTimer.singleShot(50, lambda: trigger_snip(parent_widget, send_to_chat_callback))
+
+            toolbar.resnip_requested.connect(on_resnip)
             toolbar.exec_()
 
         def on_cancel():
@@ -401,9 +425,7 @@ def trigger_snip(parent_widget, send_to_chat_callback):
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
-    """
-    Register Ctrl+Shift+X as a global hotkey.
-    """
+    """Register Ctrl+Shift+X as a global hotkey."""
     def _on_hotkey():
         try:
             app = QApplication.instance()
