@@ -14,31 +14,26 @@ from ui.theme import get as T, set_theme
 from ui.styles import global_qss
 
 
-# ── Font loader — downloads Cinzel from Google Fonts once, caches in temp ─────
+# ── Font loader — downloads Cinzel TTF once, caches in temp dir ──────────────
 _CINZEL_FONT_ID = None
 
-CINZEL_URL = (
-    "https://fonts.gstatic.com/s/cinzel/v23/"
-    "8vIU7wAr0DxW2FvX_-Q0sz3GovY.woff2"
+# Direct TTF download from GitHub (no API, works offline after first run)
+_CINZEL_TTF_URL = (
+    "https://github.com/google/fonts/raw/main/ofl/cinzel/"
+    "Cinzel%5Bwght%5D.ttf"
 )
 
 
 def _load_cinzel() -> str:
-    """Download Cinzel (woff2) once and register it with Qt.
-    Returns font family name or fallback."""
+    """Download Cinzel TTF once, register with Qt. Returns family name."""
     global _CINZEL_FONT_ID
     if _CINZEL_FONT_ID is not None:
         return _CINZEL_FONT_ID
 
-    # Try a TTF version that Qt can actually embed directly
-    TTF_URL = (
-        "https://fonts.gstatic.com/s/cinzel/v23/"
-        "8vIJ7wAr0DxW2FvX_-QD2KlA.woff"
-    )
-    cache_path = os.path.join(tempfile.gettempdir(), "cinzel_regular.woff")
+    cache_path = os.path.join(tempfile.gettempdir(), "cinzel_variable.ttf")
     try:
         if not os.path.exists(cache_path):
-            urllib.request.urlretrieve(TTF_URL, cache_path)
+            urllib.request.urlretrieve(_CINZEL_TTF_URL, cache_path)
         fid = QFontDatabase.addApplicationFont(cache_path)
         if fid >= 0:
             families = QFontDatabase.applicationFontFamilies(fid)
@@ -46,14 +41,17 @@ def _load_cinzel() -> str:
                 _CINZEL_FONT_ID = families[0]
                 return _CINZEL_FONT_ID
     except Exception:
-        pass
+        pass  # no internet / any error → fall through to system fonts
 
-    # Fallback chain — high-quality serif fonts common on Windows
+    # Static call (PyQt5 ≥5.15.8 made hasFamily a static method)
     for f in ("Palatino Linotype", "Book Antiqua", "Palatino",
               "Georgia", "Times New Roman"):
-        if QFontDatabase().hasFamily(f):
-            _CINZEL_FONT_ID = f
-            return f
+        try:
+            if QFontDatabase.hasFamily(f):
+                _CINZEL_FONT_ID = f
+                return f
+        except Exception:
+            pass
 
     _CINZEL_FONT_ID = "Georgia"
     return "Georgia"
@@ -100,14 +98,14 @@ class TitleBar(QWidget):
         lay.setContentsMargins(4, 0, 4, 0)
         lay.setSpacing(0)
 
-        # ── Left spacer (same width as right controls so title stays centred) ─
+        # Left spacer mirrors the 3 right-side buttons so title is truly centred
         self._left_spacer = QWidget()
-        self._left_spacer.setFixedWidth(128)   # 3 buttons × ~40px + padding
+        self._left_spacer.setFixedWidth(128)
         lay.addWidget(self._left_spacer)
 
         lay.addStretch()
 
-        # ── App title — centred, fancy serif font ─────────────────────────
+        # ── App title ─────────────────────────────────────────────────────
         self._title_lbl = QLabel("Local Helper")
         title_font = QFont(self._display_font, 13)
         title_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.5)
@@ -115,17 +113,13 @@ class TitleBar(QWidget):
         self._title_lbl.setFont(title_font)
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setStyleSheet(
-            f"""
-            color: {d.get('accent', '#2dd4bf')};
-            background: transparent;
-            letter-spacing: 2px;
-            """
+            f"color:{d.get('accent', '#2dd4bf')};background:transparent;"
         )
         lay.addWidget(self._title_lbl)
 
         lay.addStretch()
 
-        # ── Window controls (right side) ────────────────────────────────
+        # ── Window controls ──────────────────────────────────────────────────
         btn_css = (
             "QPushButton{{"
             "background:transparent;color:{fg};"
@@ -133,7 +127,6 @@ class TitleBar(QWidget):
             "min-width:40px;min-height:" + str(self.HEIGHT) + "px;padding:0;}}"
             "QPushButton:hover{{background:{hover};}}"
         )
-
         self._btn_min = QPushButton("⎯")
         self._btn_min.setStyleSheet(btn_css.format(fg=d["muted"], hover="#2a2a2a"))
         self._btn_min.setToolTip("Minimize")
