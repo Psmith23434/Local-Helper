@@ -1,5 +1,23 @@
 """Entry point for Local Helper."""
 
+# ── CRITICAL: pre-load torch c10.dll BEFORE any PyQt5 import ──────────────────
+# PyTorch 2.9+ on Windows raises [WinError 1114] if PyQt5 is loaded first.
+# Fix: https://github.com/pytorch/pytorch/issues/166628
+import platform as _platform
+if _platform.system() == "Windows":
+    import ctypes as _ctypes
+    import os as _os
+    from importlib.util import find_spec as _find_spec
+    try:
+        _spec = _find_spec("torch")
+        if _spec and _spec.origin:
+            _dll = _os.path.join(_os.path.dirname(_spec.origin), "lib", "c10.dll")
+            if _os.path.exists(_dll):
+                _ctypes.CDLL(_os.path.normpath(_dll))
+    except Exception:
+        pass
+# ──────────────────────────────────────────────────────────────────────────
+
 import sys
 import os
 from PyQt5.QtWidgets import QApplication
@@ -31,8 +49,6 @@ def main():
     window = MainWindow(layout=GUI_LAYOUT)
     window.show()
 
-    # Register global snipping tool hotkey (Ctrl+Shift+X)
-    # Note: Ctrl+C is intentionally avoided — Python intercepts it as KeyboardInterrupt.
     register_snip_hotkey(
         root=window,
         send_to_chat_callback=getattr(window, "attach_image", lambda b64, prompt: None)

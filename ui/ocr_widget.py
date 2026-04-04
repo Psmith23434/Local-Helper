@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFileDialog, QApplication, QProgressBar,
     QFrame, QCheckBox, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize, QTimer
 from PyQt5.QtGui  import QPixmap, QColor, QPainter, QPen
 
 # ── Colour tokens (match chat_panel dark theme) ────────────────────────────────
@@ -364,9 +364,11 @@ class OCRWidget(QWidget):
         self._worker     = None
         self._overlay    = None
         self._build_ui()
-        self._detect_gpu()
+        # ── Defer GPU detection until after the event loop starts so torch
+        # is imported AFTER c10.dll has already been pre-loaded in main.py.
+        QTimer.singleShot(500, self._detect_gpu)
 
-    # ── GPU probe ──────────────────────────────────────────────────────────────
+    # ── GPU probe (deferred — never called at import/construction time) ──────
     def _detect_gpu(self):
         try:
             import torch
@@ -381,8 +383,9 @@ class OCRWidget(QWidget):
             else:
                 self.gpu_check.setText("GPU not available (CUDA not found)")
                 self.gpu_check.setEnabled(False)
-        except ImportError:
-            self.gpu_check.setText("GPU N/A (torch not installed)")
+        except Exception:
+            # torch not installed or still having DLL issues — stay disabled
+            self.gpu_check.setText("GPU N/A")
             self.gpu_check.setEnabled(False)
 
     # ── UI ─────────────────────────────────────────────────────────────────────
@@ -525,7 +528,6 @@ class OCRWidget(QWidget):
 
     # ── Snip ──────────────────────────────────────────────────────────────────
     def _start_snip(self):
-        # Find and hide the top-level window so the desktop is visible
         top = self.window()
         top.hide()
         QApplication.processEvents()
@@ -545,7 +547,7 @@ class OCRWidget(QWidget):
             f"Snip: {pil_img.width}×{pil_img.height}px — running OCR…"
         )
         self._result_box.clear()
-        self._run()  # auto-run immediately after snip
+        self._run()
 
     def _on_snip_cancelled(self):
         self.window().show()
@@ -594,7 +596,6 @@ class OCRWidget(QWidget):
             QTimer.singleShot(1500, lambda: self._copy_btn.setText("📋 Copy"))
 
     def _insert(self):
-        """Emit text so chat_panel (or any listener) can receive it."""
         txt = self._result_box.toPlainText().strip()
         if txt:
             self.text_ready.emit(txt)
@@ -602,10 +603,6 @@ class OCRWidget(QWidget):
 
     # ── Public API for chat_panel inline snip ─────────────────────────────────
     def start_snip_for_chat(self, callback):
-        """
-        Trigger a snip whose PIL result goes straight to `callback(pil_img)`
-        instead of showing in the result box.  Used by chat_panel buttons.
-        """
         top = self.window()
         top.hide()
         QApplication.processEvents()
@@ -623,4 +620,4 @@ class OCRWidget(QWidget):
 
         overlay.snipped.connect(_got)
         overlay.cancelled.connect(_cancel)
-        self._overlay = overlay   # keep reference alive
+        self._overlay = overlay
