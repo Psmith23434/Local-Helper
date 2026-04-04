@@ -5,11 +5,11 @@ from ui.theme import get as T
 
 def global_qss() -> str:
     d = T()
-    bg      = d["bg"]        # #0d0d0d  — the one true dark
+    bg      = d["bg"]        # #0d0d0d
     surf    = d["surface"]   # #141414
-    surf2   = d["surface2"]  # #1a1a1a
+    surf2   = d["surface2"]  # #1a1a1a  <-- the ONE header colour
     surf3   = d["surface3"]  # #1f1f1f
-    border  = d["border"]    # #2a2a2a
+    border  = d["border"]
     text    = d["text"]
     muted   = d["muted"]
     accent  = d["accent"]
@@ -22,7 +22,9 @@ def global_qss() -> str:
 QMainWindow, QWidget {{ background: {bg}; }}
 QDialog {{ background: {surf}; }}
 
-/* ── Menu bar (native, hidden — only used as fallback) ─── */
+/* ── Menu bar ─────────────────────────────────────────────────────────── */
+/* The native menubar is hidden; menus live inside TitleBar._mb.          */
+/* This QSS is just a safety-net so it never shows a different colour.    */
 QMenuBar {{
     background: {surf2};
     border: none;
@@ -44,7 +46,8 @@ QMenu::item {{ padding: 5px 20px; }}
 QMenu::item:selected {{ background: {surf3}; color: {accent}; }}
 QMenu::separator {{ height: 1px; background: {border}; margin: 3px 10px; }}
 
-/* ── Tab widget ───────────────────────────── */
+/* ── Tab widget ────────────────────────────────────────────────────────── */
+/* IMPORTANT: tab bar bg must exactly match TitleBar background (surf2).  */
 QTabWidget {{
     background: {bg};
     border: none;
@@ -52,10 +55,8 @@ QTabWidget {{
 QTabWidget::pane {{
     border: none;
     background: {bg};
-    /* kill the default 1px frame Qt draws around the pane */
     top: 0px;
 }}
-/* The bar strip itself — must match header surface2 exactly */
 QTabBar {{
     background: {surf2};
     border: none;
@@ -82,10 +83,8 @@ QTabBar::tab:hover:!selected {{
     background: {surf3};
     color: {text};
 }}
-/* Fill the empty space to the right of the last tab */
-QTabBar::scroller {{ width: 0; }}
 
-/* ── Scrollbars ───────────────────────────── */
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
 QScrollBar:vertical {{ background: {surf}; width: 6px; border-radius: 3px; }}
 QScrollBar::handle:vertical {{ background: {scroll}; border-radius: 3px; min-height: 24px; }}
 QScrollBar::handle:vertical:hover {{ background: {muted}; }}
@@ -94,7 +93,7 @@ QScrollBar:horizontal {{ background: {surf}; height: 6px; border-radius: 3px; }}
 QScrollBar::handle:horizontal {{ background: {scroll}; border-radius: 3px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
-/* ── Common widgets ───────────────────────── */
+/* ── Common widgets ────────────────────────────────────────────────────── */
 QSplitter::handle {{ background: {border}; width: 1px; }}
 QStatusBar {{
     background: {surf};

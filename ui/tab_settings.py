@@ -7,7 +7,8 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QLineEdit, QSpinBox, QGroupBox, QMessageBox,
-    QSlider, QScrollArea, QFrame, QPlainTextEdit, QSizePolicy
+    QSlider, QScrollArea, QFrame, QPlainTextEdit, QSizePolicy,
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
@@ -67,6 +68,84 @@ class _ModelFetcher(QThread):
             self.error.emit(str(e))
 
 
+# ── Model picker dialog ───────────────────────────────────────────────────────
+class _ModelPickerDialog(QDialog):
+    """Full list of fetched models in a scrollable dialog."""
+
+    def __init__(self, models: list, current: str, parent=None):
+        super().__init__(parent)
+        d = T()
+        self.setWindowTitle("Select Default Model")
+        self.setMinimumSize(480, 420)
+        self.setStyleSheet(
+            f"QDialog{{background:{d['surface']};border:1px solid {d['border']};border-radius:8px;}}"
+            f"QLabel{{color:{d['text']};font-size:13px;background:transparent;}}"
+            f"QLineEdit{{background:{d['surface2']};border:1px solid {d['border']};"
+            f"border-radius:6px;color:{d['text']};padding:5px 8px;font-size:12px;}}"
+            f"QListWidget{{background:{d['surface2']};border:1px solid {d['border']};"
+            f"border-radius:6px;outline:none;}}"
+            f"QListWidget::item{{color:{d['text']};padding:6px 10px;}}"
+            f"QListWidget::item:hover{{background:{d['surface3']};}}"
+            f"QListWidget::item:selected{{background:{d['accent']};color:#fff;}}"
+            f"QPushButton{{background:{d['surface2']};border:1px solid {d['border']};"
+            f"border-radius:6px;color:{d['text']};padding:5px 14px;}}"
+            f"QPushButton:hover{{background:{d['surface3']};border-color:{d['muted']};}}"
+        )
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+
+        title = QLabel("Available models from your proxy:")
+        title.setStyleSheet(f"color:{d['muted']};font-size:12px;background:transparent;")
+        lay.addWidget(title)
+
+        # Search/filter box
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Filter models…")
+        self._search.textChanged.connect(self._filter)
+        lay.addWidget(self._search)
+
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(False)
+        self._list.itemDoubleClicked.connect(self.accept)
+        lay.addWidget(self._list, stretch=1)
+
+        self._all_models = models
+        self._populate(models)
+
+        # Pre-select current
+        for i in range(self._list.count()):
+            if self._list.item(i).text() == current:
+                self._list.setCurrentRow(i)
+                break
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.setStyleSheet(
+            f"QDialogButtonBox QPushButton{{min-width:80px;padding:6px 14px;"
+            f"background:{d['surface2']};border:1px solid {d['border']};"
+            f"border-radius:6px;color:{d['text']};}}"
+            f"QDialogButtonBox QPushButton:hover{{background:{d['surface3']};}}"
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _populate(self, models: list):
+        self._list.clear()
+        for m in models:
+            self._list.addItem(QListWidgetItem(m))
+
+    def _filter(self, text: str):
+        filtered = [m for m in self._all_models if text.lower() in m.lower()]
+        self._populate(filtered)
+
+    def selected_model(self) -> str:
+        item = self._list.currentItem()
+        return item.text() if item else ""
+
+
+# ── Settings tab ─────────────────────────────────────────────────────────────
 class SettingsTab(QWidget):
     theme_changed  = pyqtSignal()
     layout_changed = pyqtSignal(str)
@@ -75,6 +154,7 @@ class SettingsTab(QWidget):
         super().__init__(parent)
         self._log_reader    = None
         self._model_fetcher = None
+        self._fetched_models: list = []
         self._build_ui()
 
     def _build_ui(self):
@@ -97,7 +177,7 @@ class SettingsTab(QWidget):
         h.setStyleSheet(f"color:{d['text']};")
         cl.addWidget(h)
 
-        # ── Appearance ──────────────────────────────────────────────────────────────
+        # ── Appearance ──────────────────────────────────────────────────────
         grp_appear = self._group("Appearance")
         gl = QVBoxLayout(grp_appear)
         gl.setSpacing(10)
@@ -155,7 +235,7 @@ class SettingsTab(QWidget):
         gl.addLayout(row3)
         cl.addWidget(grp_appear)
 
-        # ── AI Proxy ─────────────────────────────────────────────────────────────────
+        # ── AI Proxy ────────────────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
@@ -171,40 +251,37 @@ class SettingsTab(QWidget):
         self._load_config_value("API_KEY", self.api_key)
         al.addWidget(self.api_key)
 
-        al.addWidget(self._lbl(
-            "Default Model  —  click \"Fetch models\" to load from your proxy, then select from the list."
-        ))
+        al.addWidget(self._lbl("Default Model"))
 
-        # Model combo + fetch button on same row
+        # Model display row: read-only label + two buttons
         model_row = QHBoxLayout()
-        self.default_model_combo = QComboBox()
-        self.default_model_combo.setEditable(True)
-        self.default_model_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.default_model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.default_model_combo.setMinimumWidth(340)
-        self.default_model_combo.setStyleSheet(
-            f"QComboBox {{ background:{d['surface2']}; border:1px solid {d['border']};"
-            f" border-radius:6px; padding:5px 8px; color:{d['text']}; font-size:12px; }}"
-            f"QComboBox QAbstractItemView {{ background:{d['surface']}; color:{d['text']};"
-            f" border:1px solid {d['border']}; selection-background-color:{d['accent']};"
-            f" min-width:400px; }}"
-        )
+        self._model_display = QLineEdit()
+        self._model_display.setReadOnly(True)
+        self._model_display.setPlaceholderText("(not set — fetch models first)")
+        self._model_display.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         try:
             import config
             saved = getattr(config, "DEFAULT_MODEL", "")
             if saved:
-                self.default_model_combo.addItem(saved)
-                self.default_model_combo.setCurrentText(saved)
+                self._model_display.setText(saved)
         except Exception:
             pass
-        model_row.addWidget(self.default_model_combo, stretch=1)
+        model_row.addWidget(self._model_display, stretch=1)
 
-        self._fetch_models_btn = QPushButton("🔄  Fetch models")
+        self._fetch_models_btn = QPushButton("🔄  Fetch")
         self._fetch_models_btn.setFixedHeight(32)
-        self._fetch_models_btn.setFixedWidth(130)
-        self._fetch_models_btn.setToolTip("Query BASE_URL/models and populate the dropdown")
+        self._fetch_models_btn.setFixedWidth(90)
+        self._fetch_models_btn.setToolTip("Load model list from BASE_URL/models")
         self._fetch_models_btn.clicked.connect(self._fetch_models)
         model_row.addWidget(self._fetch_models_btn)
+
+        self._pick_model_btn = QPushButton("📋  Pick…")
+        self._pick_model_btn.setFixedHeight(32)
+        self._pick_model_btn.setFixedWidth(90)
+        self._pick_model_btn.setToolTip("Open model list to choose")
+        self._pick_model_btn.setEnabled(False)
+        self._pick_model_btn.clicked.connect(self._pick_model)
+        model_row.addWidget(self._pick_model_btn)
         al.addLayout(model_row)
 
         self._model_status_lbl = QLabel("")
@@ -218,14 +295,14 @@ class SettingsTab(QWidget):
         al.addWidget(btn_save_api)
         cl.addWidget(grp_api)
 
-        # ── Translation ──────────────────────────────────────────────────────────────
+        # ── Translation ─────────────────────────────────────────────────────
         grp_trans = self._group("Translation")
         tl = QVBoxLayout(grp_trans)
         tl.setSpacing(12)
 
         tl.addWidget(self._lbl(
-            "Translation backend  —  LibreTranslate = self-hosted (private, no internet needed);  "
-            "Google = always-on online fallback via deep-translator (no key, no account)"
+            "Translation backend  —  LibreTranslate = self-hosted (private);  "
+            "Google = online fallback via deep-translator (no key needed)"
         ))
         backend_row = QHBoxLayout()
         self.backend_combo = QComboBox()
@@ -332,7 +409,7 @@ class SettingsTab(QWidget):
         cl.addWidget(grp_trans)
         self._on_backend_changed(self.backend_combo.currentIndex())
 
-        # ── GitHub ────────────────────────────────────────────────────────────────────
+        # ── GitHub ──────────────────────────────────────────────────────────
         grp_gh = self._group("GitHub")
         ghl = QVBoxLayout(grp_gh)
         ghl.setSpacing(10)
@@ -348,7 +425,7 @@ class SettingsTab(QWidget):
         ghl.addWidget(btn_save_gh)
         cl.addWidget(grp_gh)
 
-        # ── Web Search ─────────────────────────────────────────────────────────────────
+        # ── Web Search ──────────────────────────────────────────────────────
         grp_ws = self._group("Web Search")
         wl = QVBoxLayout(grp_ws)
         wl.setSpacing(10)
@@ -364,7 +441,7 @@ class SettingsTab(QWidget):
         wl.addWidget(btn_save_ws)
         cl.addWidget(grp_ws)
 
-        # ── Danger zone ─────────────────────────────────────────────────────────────────
+        # ── Danger zone ─────────────────────────────────────────────────────
         grp_danger = self._group("Danger Zone")
         grp_danger.setStyleSheet(
             f"QGroupBox{{border:1px solid {d['red']};border-radius:8px;"
@@ -389,9 +466,10 @@ class SettingsTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    # ── Model fetch ─────────────────────────────────────────────────────────────────
+    # ── Model fetch & pick ───────────────────────────────────────────────────
     def _fetch_models(self):
         self._fetch_models_btn.setEnabled(False)
+        self._pick_model_btn.setEnabled(False)
         self._model_status_lbl.setText("⏳ Fetching…")
         self._model_fetcher = _ModelFetcher()
         self._model_fetcher.models_ready.connect(self._on_models_ready)
@@ -400,26 +478,38 @@ class SettingsTab(QWidget):
 
     def _on_models_ready(self, models: list):
         self._fetch_models_btn.setEnabled(True)
+        self._fetched_models = models
         if not models:
             self._model_status_lbl.setText("No models returned by the proxy.")
             return
-        current = self.default_model_combo.currentText()
-        self.default_model_combo.clear()
-        self.default_model_combo.addItems(models)
-        # Restore previous selection if still present, otherwise keep first
-        idx = self.default_model_combo.findText(current)
-        self.default_model_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self._model_status_lbl.setText(f"✓ {len(models)} models loaded — select below")
+        self._pick_model_btn.setEnabled(True)
+        self._model_status_lbl.setText(
+            f"✓ {len(models)} models loaded — click 📋 Pick… to choose"
+        )
 
     def _on_models_error(self, msg: str):
         self._fetch_models_btn.setEnabled(True)
         self._model_status_lbl.setText(f"✗ {msg}")
 
-    # ── Backend toggle ────────────────────────────────────────────────────────────────
+    def _pick_model(self):
+        if not self._fetched_models:
+            return
+        dlg = _ModelPickerDialog(
+            self._fetched_models,
+            self._model_display.text(),
+            parent=self
+        )
+        if dlg.exec_() == QDialog.Accepted:
+            chosen = dlg.selected_model()
+            if chosen:
+                self._model_display.setText(chosen)
+                self._model_status_lbl.setText(f"Selected: {chosen}")
+
+    # ── Backend toggle ───────────────────────────────────────────────────────
     def _on_backend_changed(self, idx: int):
         self._lt_section.setVisible(idx == 0)
 
-    # ── LibreTranslate process ──────────────────────────────────────────────────────────
+    # ── LibreTranslate process ───────────────────────────────────────────────
     def _find_libretranslate_exe(self) -> str | None:
         scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
         for name in ("libretranslate", "libretranslate.exe"):
@@ -520,7 +610,7 @@ class SettingsTab(QWidget):
         self._lt_status_lbl.setText("Not running")
         self._lt_status_lbl.setStyleSheet("color:#666;font-size:11px;")
 
-    # ── Helpers ──────────────────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────────
     def _group(self, title: str) -> QGroupBox:
         return QGroupBox(title)
 
@@ -598,7 +688,7 @@ class SettingsTab(QWidget):
         ok = self._write_config({
             "BASE_URL":      self.api_url.text().strip(),
             "API_KEY":       self.api_key.text().strip(),
-            "DEFAULT_MODEL": self.default_model_combo.currentText().strip(),
+            "DEFAULT_MODEL": self._model_display.text().strip(),
         })
         if ok:
             QMessageBox.information(self, "Saved",
