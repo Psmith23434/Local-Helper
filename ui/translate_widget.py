@@ -19,23 +19,23 @@ from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 import translator as TR
 
 
-# ── Colour tokens (mirrors ocr_widget dark palette) ───────────────────────────
+# ── Colour tokens ──────────────────────────────────────────────────────────────
 D = {
-    "bg":       "#0d0d0d",
-    "surface":  "#141414",
-    "surface2": "#1a1a1a",
-    "border":   "#2a2a2a",
-    "accent":   "#7c6af7",
-    "accent2":  "#5a4fd1",
-    "text":     "#e8e8e8",
-    "muted":    "#666666",
-    "green":    "#4ade80",
-    "red":      "#f87171",
-    "teal":     "#2dd4bf",
-    "teal_bg":  "#0d2420",
-    "teal_bd":  "#1a4a40",
-    "orange":   "#fb923c",
-    "orange_bg":"#1e0f00",
+    "bg":        "#0d0d0d",
+    "surface":   "#141414",
+    "surface2":  "#1a1a1a",
+    "border":    "#2a2a2a",
+    "accent":    "#7c6af7",
+    "accent2":   "#5a4fd1",
+    "text":      "#e8e8e8",
+    "muted":     "#666666",
+    "green":     "#4ade80",
+    "red":       "#f87171",
+    "teal":      "#2dd4bf",
+    "teal_bg":   "#0d2420",
+    "teal_bd":   "#1a4a40",
+    "orange":    "#fb923c",
+    "orange_bg": "#1e0f00",
 }
 
 TRANS_QSS = f"""
@@ -101,7 +101,7 @@ QTextEdit {{
 }}
 """
 
-# Backend badge styles (set via setStyleSheet on _backend_lbl)
+# Backend badge styles
 _BADGE_LIBRE = (
     f"background:{D['teal_bg']};color:{D['teal']};border:1px solid {D['teal_bd']};"
     "border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;"
@@ -119,8 +119,7 @@ _BADGE_ERROR = (
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
 class _TranslateWorker(QThread):
-    # emits (translated_text, backend_name)
-    finished = pyqtSignal(str, str)
+    finished = pyqtSignal(str, str)   # (translated_text, backend_name)
     error    = pyqtSignal(str, str)
 
     def __init__(self, text: str, source: str, target: str):
@@ -145,7 +144,7 @@ class _TranslateWorker(QThread):
 class TranslateWidget(QWidget):
     """Collapsible translate panel. Drop anywhere in a QVBoxLayout."""
 
-    text_ready = pyqtSignal(str)  # emits translated text for chat insertion
+    text_ready = pyqtSignal(str)
 
     def __init__(self, parent=None, collapsed: bool = True):
         super().__init__(parent)
@@ -154,10 +153,8 @@ class TranslateWidget(QWidget):
         self.setStyleSheet(TRANS_QSS)
         self._build_ui()
         self._load_defaults()
-        # Check LibreTranslate availability once on startup (non-blocking)
         QTimer.singleShot(500, self._probe_backend)
 
-    # ── Defaults from config ──────────────────────────────────────────────────
     def _load_defaults(self):
         default_target = TR.get_default_target()
         name = TR.code_to_name(default_target)
@@ -165,22 +162,25 @@ class TranslateWidget(QWidget):
         if idx >= 0:
             self.target_combo.setCurrentIndex(idx)
 
-    # ── Probe LibreTranslate on startup ───────────────────────────────────────
     def _probe_backend(self):
-        """Check once whether LibreTranslate is reachable and update the badge."""
-        available = TR.libretranslate_available()
-        if available:
-            self._set_backend_badge(TR.BACKEND_LIBRETRANSLATE, idle=True)
-        else:
+        """On startup: show which backend will be used based on config + availability."""
+        backend_cfg = TR.get_configured_backend()
+        if backend_cfg == TR.BACKEND_GOOGLE:
             self._set_backend_badge(TR.BACKEND_GOOGLE, idle=True)
+        else:
+            available = TR.libretranslate_available()
+            if available:
+                self._set_backend_badge(TR.BACKEND_LIBRETRANSLATE, idle=True)
+            else:
+                self._set_backend_badge(TR.BACKEND_GOOGLE, idle=True, lt_offline=True)
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # ── UI ───────────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(0, 4, 0, 0)
         root.setSpacing(0)
 
-        # ── Toggle header ─────────────────────────────────────────────────────
+        # Toggle header
         self._toggle_btn = QPushButton("🌐  Translate  ▸")
         self._toggle_btn.setCheckable(True)
         self._toggle_btn.setChecked(not self._collapsed)
@@ -194,43 +194,36 @@ class TranslateWidget(QWidget):
         self._toggle_btn.clicked.connect(self._toggle)
         root.addWidget(self._toggle_btn)
 
-        # ── Body card ─────────────────────────────────────────────────────────
+        # Body card
         self._card = QFrame()
         self._card.setObjectName("TransCard")
         card_lay = QVBoxLayout(self._card)
-        card_lay.setContentsMargins(14, 12, 14, 12)
-        card_lay.setSpacing(8)
+        card_lay.setContentsMargins(14, 10, 14, 10)
+        card_lay.setSpacing(6)
 
         # Lang row
         lang_row = QHBoxLayout()
         lang_row.setSpacing(8)
-
         src_lbl = QLabel("From:")
         src_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;")
         lang_row.addWidget(src_lbl)
-
         self.source_combo = QComboBox()
         self.source_combo.addItems(TR.LANG_NAMES)
         self.source_combo.setCurrentText("Auto-detect")
         lang_row.addWidget(self.source_combo)
-
         arrow = QLabel("→")
         arrow.setStyleSheet(f"color:{D['muted']};font-size:14px;")
         lang_row.addWidget(arrow)
-
         tgt_lbl = QLabel("To:")
         tgt_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;")
         lang_row.addWidget(tgt_lbl)
-
         self.target_combo = QComboBox()
-        # Target: everything except "Auto-detect"
         self.target_combo.addItems(TR.LANG_NAMES[1:])
         lang_row.addStretch()
         card_lay.addLayout(lang_row)
-        # Add target_combo after stretch so it sits right of arrow
         lang_row.insertWidget(5, self.target_combo)
 
-        # Source text box  (editable — free-text OR pre-filled from OCR)
+        # Source text header
         src_hdr = QHBoxLayout()
         src_hdr_lbl = QLabel("Source text:")
         src_hdr_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;")
@@ -243,29 +236,27 @@ class TranslateWidget(QWidget):
         src_hdr.addWidget(clr_btn)
         card_lay.addLayout(src_hdr)
 
+        # Source text box — compact height, scrollable
         self.source_box = QTextEdit()
         self.source_box.setPlaceholderText(
             "Paste or type text here, or use 'Fill from OCR' after extracting text above…"
         )
-        self.source_box.setMinimumHeight(80)
-        self.source_box.setMaximumHeight(160)
+        self.source_box.setFixedHeight(72)   # ~4 lines, no large minimum
         card_lay.addWidget(self.source_box)
 
-        # Translate button row + backend badge
+        # Translate button + backend badge
         action_row = QHBoxLayout()
         self.translate_btn = QPushButton("🌐  Translate")
         self.translate_btn.setObjectName("TransBtn")
-        self.translate_btn.setFixedHeight(34)
+        self.translate_btn.setFixedHeight(32)
         self.translate_btn.clicked.connect(self._run_translate)
         action_row.addWidget(self.translate_btn)
 
-        # Backend badge label — shows which engine was used
         self._backend_lbl = QLabel("checking…")
         self._backend_lbl.setStyleSheet(
             f"color:{D['muted']};font-size:10px;padding:1px 7px;"
         )
         action_row.addWidget(self._backend_lbl)
-
         action_row.addStretch()
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;")
@@ -278,13 +269,11 @@ class TranslateWidget(QWidget):
         res_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;font-weight:600;")
         res_hdr.addWidget(res_lbl)
         res_hdr.addStretch()
-
         self._copy_btn = QPushButton("📋 Copy")
         self._copy_btn.setObjectName("SmallBtn")
         self._copy_btn.setFixedHeight(22)
         self._copy_btn.clicked.connect(self._copy)
         res_hdr.addWidget(self._copy_btn)
-
         self._insert_btn = QPushButton("➡  Insert into Chat")
         self._insert_btn.setObjectName("InsertBtn")
         self._insert_btn.setFixedHeight(22)
@@ -292,27 +281,28 @@ class TranslateWidget(QWidget):
         res_hdr.addWidget(self._insert_btn)
         card_lay.addLayout(res_hdr)
 
+        # Result box — compact fixed height, scrollable
         self.result_box = QTextEdit()
         self.result_box.setPlaceholderText("Translation will appear here…")
-        self.result_box.setMinimumHeight(80)
-        self.result_box.setMaximumHeight(160)
+        self.result_box.setReadOnly(True)
+        self.result_box.setFixedHeight(72)   # matches source box height
         card_lay.addWidget(self.result_box)
 
         root.addWidget(self._card)
         self._card.setVisible(not self._collapsed)
 
-    # ── Backend badge helper ──────────────────────────────────────────────────
-    def _set_backend_badge(self, backend: str, idle: bool = False):
-        """Update the backend indicator label.
-
-        idle=True  → shown on startup probe (e.g. '● LibreTranslate  ready')
-        idle=False → shown after a translation completed
-        """
+    # ── Backend badge ─────────────────────────────────────────────────────────
+    def _set_backend_badge(self, backend: str, idle: bool = False, lt_offline: bool = False):
         if backend == TR.BACKEND_LIBRETRANSLATE:
             label = "● LibreTranslate" + ("  ready" if idle else "  used")
             self._backend_lbl.setStyleSheet(_BADGE_LIBRE)
         elif backend == TR.BACKEND_GOOGLE:
-            label = "● Google (fallback)" + ("  — LibreTranslate offline" if idle else "  used")
+            if idle and lt_offline:
+                label = "● Google (fallback)  — start LibreTranslate in Settings"
+            elif idle:
+                label = "● Google Translate  (configured)"
+            else:
+                label = "● Google Translate  used"
             self._backend_lbl.setStyleSheet(_BADGE_GOOGLE)
         else:
             label = "● Error"
@@ -325,11 +315,10 @@ class TranslateWidget(QWidget):
         arrow = "▾" if checked else "▸"
         self._toggle_btn.setText(f"🌐  Translate  {arrow}")
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────────────
     def set_source_text(self, text: str):
         """Pre-fill the source box (called after OCR completes)."""
         self.source_box.setPlainText(text)
-        # Auto-expand if collapsed
         if not self._toggle_btn.isChecked():
             self._toggle_btn.setChecked(True)
             self._toggle(True)
@@ -347,18 +336,15 @@ class TranslateWidget(QWidget):
             return
         if self._worker and self._worker.isRunning():
             return
-
         src_name = self.source_combo.currentText()
         tgt_name = self.target_combo.currentText()
         src = TR.name_to_code(src_name)
         tgt = TR.name_to_code(tgt_name)
-
         self.translate_btn.setEnabled(False)
         self.result_box.clear()
         self._status_lbl.setText("Translating…")
         self._backend_lbl.setText("…")
         self._backend_lbl.setStyleSheet(f"color:{D['muted']};font-size:10px;padding:1px 7px;")
-
         self._worker = _TranslateWorker(text, src, tgt)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)

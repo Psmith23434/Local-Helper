@@ -10,3 +10,6 @@ Pillow>=10.0
 numpy>=1.24
 easyocr>=1.7
 keyboard>=0.13.5
+# Translation
+deep-translator>=1.11
+libretranslate>=1.6
