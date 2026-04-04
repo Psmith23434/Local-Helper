@@ -399,12 +399,19 @@ class SettingsTab(QWidget):
         self._lt_log_append(f"[info] Loading languages: {langs}")
         self._lt_log_append("[info] First run downloads models — this can take several minutes…")
 
+        # Inherit current environment and force UTF-8 so Windows cp1252 can't
+        # choke on arrow characters (→) printed by LibreTranslate during model
+        # download — that encoding error was causing the IndexError crash.
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"  # Python 3.7+ UTF-8 mode, covers all I/O streams
+
         try:
             _lt_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                # No CREATE_NO_WINDOW — we need stdout pipe; window won't appear anyway
+                env=env,
             )
         except Exception as e:
             self._lt_log_append(f"[error] Failed to start: {e}")
