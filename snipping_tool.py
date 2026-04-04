@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog,
     QButtonGroup, QRadioButton, QDialog, QRubberBand,
-    QSizePolicy
+    QSizePolicy, QCheckBox
 )
 from PyQt5.QtCore import Qt, QRect, QSize, QPoint, QTimer, pyqtSignal
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QCursor, QImage
@@ -42,7 +42,7 @@ class SnipOverlay(QWidget):
 
     snipped = pyqtSignal(object)  # emits PIL Image on completion
 
-    def __init__(self):
+    def __init__(self, screenshot: QPixmap = None):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -51,10 +51,15 @@ class SnipOverlay(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(QCursor(Qt.CrossCursor))
-        self.setWindowState(Qt.WindowFullScreen)
 
-        screen = QApplication.primaryScreen()
-        self._bg = screen.grabWindow(0)
+        # Use a pre-captured screenshot if provided (avoids grabbing before
+        # the main window has fully hidden), otherwise grab now.
+        if screenshot is not None:
+            self._bg = screenshot
+        else:
+            screen = QApplication.primaryScreen()
+            self._bg = screen.grabWindow(0)
+
         geo = QApplication.desktop().screenGeometry()
         self.setGeometry(geo)
 
@@ -165,6 +170,28 @@ class SnipToolbar(QDialog):
         self.setWindowTitle("Snip Toolbar")
         self.setMinimumWidth(520)
         self._build_ui()
+        self._detect_gpu()
+
+    # ── GPU detection for EasyOCR ────────────────────────────────────────────
+    def _detect_gpu(self):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                name = torch.cuda.get_device_name(0)
+                self.gpu_check.setText(f"Use GPU  —  {name}")
+                self.gpu_check.setEnabled(True)
+                self.gpu_check.setChecked(True)
+                from ui.theme import get as T
+                d = T()
+                self.gpu_check.setStyleSheet(
+                    f"color:{d.get('green', '#4ade80')};font-size:11px;"
+                )
+            else:
+                self.gpu_check.setText("GPU not available (CPU only)")
+                self.gpu_check.setEnabled(False)
+        except Exception:
+            self.gpu_check.setText("GPU N/A (torch not installed)")
+            self.gpu_check.setEnabled(False)
 
     def _build_ui(self):
         from ui.theme import get as T
@@ -222,6 +249,18 @@ class SnipToolbar(QDialog):
         lang_row.addStretch()
         root.addWidget(self.lang_widget)
 
+        # ── GPU checkbox (EasyOCR only) ─────────────────────────────────────
+        gpu_row = QHBoxLayout()
+        self.gpu_check = QCheckBox("Use GPU  —  detecting…")
+        self.gpu_check.setChecked(False)
+        self.gpu_check.setEnabled(False)
+        self.gpu_check.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        gpu_row.addWidget(self.gpu_check)
+        gpu_row.addStretch()
+        self.gpu_widget = QWidget()
+        self.gpu_widget.setLayout(gpu_row)
+        root.addWidget(self.gpu_widget)
+
         from PyQt5.QtWidgets import QComboBox
         prompt_row = QHBoxLayout()
         prompt_lbl = QLabel("Prompt:")
@@ -272,6 +311,7 @@ class SnipToolbar(QDialog):
 
     def _toggle_lang_bar(self, quick_checked):
         self.lang_widget.setVisible(quick_checked)
+        self.gpu_widget.setVisible(quick_checked)
         self._ocr_mode = "quick" if quick_checked else "ai"
 
     def _select_lang(self, code):
@@ -286,12 +326,13 @@ class SnipToolbar(QDialog):
 
     def _extract_text(self):
         from ocr_tool import run_ocr
+        use_gpu = self.gpu_check.isChecked() and self.gpu_check.isEnabled()
         lang = None if self._selected_lang == "auto" else self._selected_lang
         self.result_lbl.setText("Extracting text (first run may take a moment to load model)...")
         self.result_lbl.show()
         self.result_box.hide()
         QApplication.processEvents()
-        text = run_ocr(self.image, mode=self._ocr_mode, lang_override=lang)
+        text = run_ocr(self.image, mode=self._ocr_mode, lang_override=lang, use_gpu=use_gpu)
         self.result_box.setPlainText(text)
         self.result_lbl.setText("Extracted Text (editable):")
         self.result_box.show()
@@ -315,24 +356,48 @@ class SnipToolbar(QDialog):
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def trigger_snip(parent_widget, send_to_chat_callback):
-    """Launch the snip overlay. Must be called from the Qt main thread."""
+    """Launch the snip overlay. Must be called from the Qt main thread.
+    
+    FIX: hides the parent window, waits 150 ms for Windows to repaint
+    the desktop, THEN grabs the screen — eliminates the black-frame glitch.
+    """
     global _active_overlay
     if _active_overlay is not None:
         return
-    _active_overlay = SnipOverlay()
 
-    def on_snipped(image):
-        toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
-        toolbar.exec_()
+    # Hide parent window and wait before grabbing screen
+    top = None
+    if parent_widget is not None:
+        top = parent_widget.window()
+        top.hide()
+        QApplication.processEvents()
 
-    _active_overlay.snipped.connect(on_snipped)
+    def _do_snip():
+        global _active_overlay
+        screen = QApplication.primaryScreen()
+        screenshot = screen.grabWindow(0)
+        _active_overlay = SnipOverlay(screenshot)
+
+        def on_snipped(image):
+            if top is not None:
+                top.show()
+            toolbar = SnipToolbar(image, send_to_chat_callback, parent=parent_widget)
+            toolbar.exec_()
+
+        def on_cancel():
+            if top is not None:
+                top.show()
+
+        _active_overlay.snipped.connect(on_snipped)
+        _active_overlay.snipped.connect(lambda _: _clear_overlay())
+        _active_overlay.destroyed.connect(on_cancel)
+
+    QTimer.singleShot(150, _do_snip)
 
 
 def register_snip_hotkey(root, send_to_chat_callback):
     """
     Register Ctrl+Shift+X as a global hotkey.
-    Uses QApplication.instance() at call-time (not a stale closure).
-    Ctrl+C avoided — Python intercepts it as KeyboardInterrupt.
     """
     def _on_hotkey():
         try:

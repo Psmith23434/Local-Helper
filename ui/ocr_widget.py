@@ -6,8 +6,6 @@ insert it directly into the input box.
 """
 
 # ── CRITICAL: pre-load torch c10.dll at module import time ───────────────────
-# This must happen before PyQt5 is first touched.  main.py already does this,
-# but we repeat it here so the widget is safe even if imported in isolation.
 import platform as _plt
 if _plt.system() == "Windows":
     import ctypes as _ct, os as _os
@@ -202,11 +200,6 @@ class SnipOverlay(QWidget):
         self._rect       = QRect()
         self._drawing    = False
 
-        # ── Use show() + explicit geometry instead of showFullScreen().
-        # showFullScreen() on Windows causes a black-frame visual glitch
-        # because the WM repaints the taskbar area before our paintEvent fires.
-        # Covering the full virtual desktop geometry with a borderless tool
-        # window avoids that entirely.
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
@@ -214,7 +207,6 @@ class SnipOverlay(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setCursor(Qt.CrossCursor)
 
-        # Cover ALL screens (virtual desktop), not just the primary one
         desktop = QApplication.desktop()
         self.setGeometry(desktop.geometry())
         self.show()
@@ -546,17 +538,22 @@ class OCRWidget(QWidget):
         self._result_box.clear()
         self._status.setText("No image loaded.")
 
-    # ── Snip
+    # ── Snip — FIX: hide window first, wait 150 ms, THEN grab screen
     def _start_snip(self):
         top = self.window()
         top.hide()
         QApplication.processEvents()
-        screen = QApplication.primaryScreen()
-        screenshot = screen.grabWindow(0)
-        dpr = screen.devicePixelRatio()
+        # Wait for Windows to actually repaint the desktop behind the window
+        # before grabbing the screen — avoids the black-frame glitch.
+        QTimer.singleShot(150, lambda: self._grab_and_snip(top))
+
+    def _grab_and_snip(self, top):
+        screen      = QApplication.primaryScreen()
+        screenshot  = screen.grabWindow(0)
+        dpr         = screen.devicePixelRatio()
         self._overlay = SnipOverlay(screenshot, dpr)
         self._overlay.snipped.connect(self._on_snipped)
-        self._overlay.cancelled.connect(self._on_snip_cancelled)
+        self._overlay.cancelled.connect(lambda: self._on_snip_cancelled(top))
 
     def _on_snipped(self, pil_img):
         self.window().show()
@@ -567,8 +564,11 @@ class OCRWidget(QWidget):
         self._result_box.clear()
         self._run()
 
-    def _on_snip_cancelled(self):
-        self.window().show()
+    def _on_snip_cancelled(self, top=None):
+        if top is not None:
+            top.show()
+        else:
+            self.window().show()
         self._status.setText("Snip cancelled.")
 
     # ── OCR
@@ -619,18 +619,22 @@ class OCRWidget(QWidget):
             self._status.setText("✓ Text sent to Chat input.")
 
     # ── Public API for chat_panel inline snip
-    def start_snip_for_chat(self, callback):
+    def start_snip_for_chat(self, callback, use_gpu: bool = False):
+        """Called by General Chat snip button. Hides window, waits, grabs, snips."""
         top = self.window()
         top.hide()
         QApplication.processEvents()
-        screen = QApplication.primaryScreen()
+        QTimer.singleShot(150, lambda: self._grab_for_chat(top, callback, use_gpu))
+
+    def _grab_for_chat(self, top, callback, use_gpu: bool):
+        screen     = QApplication.primaryScreen()
         screenshot = screen.grabWindow(0)
-        dpr = screen.devicePixelRatio()
-        overlay = SnipOverlay(screenshot, dpr)
+        dpr        = screen.devicePixelRatio()
+        overlay    = SnipOverlay(screenshot, dpr)
 
         def _got(pil_img):
             top.show()
-            callback(pil_img)
+            callback(pil_img, use_gpu)
 
         def _cancel():
             top.show()

@@ -6,7 +6,6 @@ import numpy as np
 from PIL import Image
 
 # EasyOCR language codes for the toolbar selector
-# Maps the UI language codes → EasyOCR language list
 LANG_MAP = {
     "eng": ["en"],
     "deu": ["de"],
@@ -27,17 +26,18 @@ DEFAULT_LANGS = ["en", "de"]  # auto mode: English + German
 _reader_cache = {}
 
 
-def _get_reader(langs: list):
-    """Return a cached EasyOCR Reader for the given language list."""
+def _get_reader(langs: list, use_gpu: bool = False):
+    """Return a cached EasyOCR Reader for the given language list and GPU flag."""
     import easyocr
-    key = tuple(sorted(langs))
+    key = (tuple(sorted(langs)), use_gpu)
     if key not in _reader_cache:
-        print(f"[OCR] Loading EasyOCR model for languages: {langs}")
-        _reader_cache[key] = easyocr.Reader(langs, gpu=False)
+        print(f"[OCR] Loading EasyOCR model for languages: {langs}, GPU: {use_gpu}")
+        _reader_cache[key] = easyocr.Reader(langs, gpu=use_gpu)
     return _reader_cache[key]
 
 
-def run_ocr(image: Image.Image, mode: str = "quick", lang_override: str = None) -> str:
+def run_ocr(image: Image.Image, mode: str = "quick", lang_override: str = None,
+           use_gpu: bool = False) -> str:
     """
     Extract text from a PIL Image.
 
@@ -46,33 +46,32 @@ def run_ocr(image: Image.Image, mode: str = "quick", lang_override: str = None) 
         mode:          'quick' = EasyOCR (offline)
                        'ai'    = GPT-4o vision (online)
         lang_override: Tesseract-style language code from UI (e.g. 'deu').
-                       Mapped internally to EasyOCR codes.
+        use_gpu:       Whether to use CUDA GPU for EasyOCR (ignored in AI mode).
 
     Returns:
         Extracted text as a string.
     """
     if mode == "ai":
         return _ai_ocr(image)
-    return _easyocr_ocr(image, lang_override)
+    return _easyocr_ocr(image, lang_override, use_gpu=use_gpu)
 
 
 # ── Quick OCR (EasyOCR) ───────────────────────────────────────────────────────
 
-def _easyocr_ocr(image: Image.Image, lang_override: str = None) -> str:
+def _easyocr_ocr(image: Image.Image, lang_override: str = None,
+                 use_gpu: bool = False) -> str:
     try:
-        import easyocr  # noqa — just to give a clean ImportError message
+        import easyocr  # noqa
     except ImportError:
         return "[Error] easyocr not installed. Run: pip install easyocr"
 
-    # Resolve language list
     if lang_override and lang_override != "auto":
         langs = LANG_MAP.get(lang_override, DEFAULT_LANGS)
     else:
         langs = DEFAULT_LANGS
 
     try:
-        reader = _get_reader(langs)
-        # EasyOCR accepts numpy arrays
+        reader = _get_reader(langs, use_gpu=use_gpu)
         img_array = np.array(image.convert("RGB"))
         results = reader.readtext(img_array, detail=0, paragraph=True)
         text = "\n".join(results).strip()
