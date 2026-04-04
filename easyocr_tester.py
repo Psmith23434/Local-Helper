@@ -21,10 +21,10 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog,
-    QProgressBar, QFrame, QCheckBox, QRubberBand
+    QProgressBar, QFrame, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize
-from PyQt5.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor, QPainter, QPen, QScreen
+from PyQt5.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor, QPainter, QPen
 
 # ── Dark theme ──────────────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ LANGS = [
     ("PL",    ["pl"]),
     ("CS",    ["cs"]),
     ("SV",    ["sv"]),
-    ("RU ⚠",  ["ru", "en"]),  # Cyrillic — isolated reader
+    ("RU ⚠",  ["ru", "en"]),
 ]
 
 # ── OCR worker ─────────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ class OCRWorker(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, source, langs, use_gpu):
-        """source: file path (str) OR PIL Image / numpy array."""
+        """source: file path (str) OR PIL Image."""
         super().__init__()
         self.source  = source
         self.langs   = langs
@@ -142,20 +142,50 @@ class OCRWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
+# ── helpers ────────────────────────────────────────────────────────────────────────
+
+def qpixmap_to_pil(pixmap):
+    """
+    Correctly convert a QPixmap to a PIL RGB Image.
+    Uses bytesPerLine (stride) so rows are never mis-aligned,
+    which was the cause of the RGB colour-fringe glitch.
+    """
+    from PIL import Image
+    qimg = pixmap.toImage().convertToFormat(pixmap.toImage().Format_RGB888)
+    w, h = qimg.width(), qimg.height()
+    stride = qimg.bytesPerLine()          # may be > w*3 due to alignment padding
+    ptr = qimg.bits()
+    ptr.setsize(h * stride)
+    # Build numpy array respecting stride, then slice to exact pixel columns
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, stride))
+    arr = arr[:, : w * 3].reshape((h, w, 3)).copy()
+    return Image.fromarray(arr, "RGB")
+
+
 # ── Snip overlay ───────────────────────────────────────────────────────────────────
 
 class SnipOverlay(QWidget):
-    """Full-screen semi-transparent overlay for drawing a snip rectangle."""
-    snipped = pyqtSignal(object)   # emits PIL Image of the cropped region
+    """
+    Full-screen semi-transparent overlay.
+
+    HiDPI fix
+    ---------
+    Mouse events are in *logical* pixels (Qt coordinate space).
+    grabWindow() captures at *physical* pixels on HiDPI screens.
+    We multiply the selection rect by the device pixel ratio (DPR)
+    before cropping so the right region is always captured.
+    """
+    snipped   = pyqtSignal(object)   # emits PIL Image
     cancelled = pyqtSignal()
 
-    def __init__(self, screenshot):
+    def __init__(self, screenshot, dpr):
         super().__init__()
-        self._screenshot = screenshot   # QPixmap of full screen
-        self._origin = QPoint()
-        self._rect   = QRect()
-        self._rubber = None
-        self._drawing = False
+        self._screenshot = screenshot   # full-screen QPixmap (physical pixels)
+        self._dpr        = dpr          # device pixel ratio (e.g. 1.25, 1.5, 2.0)
+        self._origin     = QPoint()
+        self._rect       = QRect()
+        self._drawing    = False
 
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -164,26 +194,31 @@ class SnipOverlay(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
+        # Overlay covers the logical screen geometry
         self.setGeometry(QApplication.primaryScreen().geometry())
         self.showFullScreen()
 
+    # ── paint ──────────────────────────────────────────────────────────────
+
     def paintEvent(self, _):
         painter = QPainter(self)
-        # Dim overlay
         painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
-        # Draw bright selection rectangle
         if not self._rect.isNull():
+            # Clear (reveal) the selected region
             painter.setCompositionMode(QPainter.CompositionMode_Clear)
             painter.fillRect(self._rect.normalized(), QColor(0, 0, 0, 0))
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             pen = QPen(QColor(108, 63, 197), 2)
             painter.setPen(pen)
             painter.drawRect(self._rect.normalized())
-        # Instruction text
         painter.setPen(QColor(200, 200, 200))
-        painter.drawText(self.rect().adjusted(0, 20, 0, 0),
-                         Qt.AlignHCenter | Qt.AlignTop,
-                         "Draw a rectangle to snip  —  Esc to cancel")
+        painter.drawText(
+            self.rect().adjusted(0, 20, 0, 0),
+            Qt.AlignHCenter | Qt.AlignTop,
+            "Draw a rectangle to snip  —  Esc to cancel"
+        )
+
+    # ── events ─────────────────────────────────────────────────────────────
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -204,23 +239,26 @@ class SnipOverlay(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self._drawing:
             self._drawing = False
-            self._rect = QRect(self._origin, e.pos()).normalized()
+            logical_rect  = QRect(self._origin, e.pos()).normalized()
             self.close()
-            if self._rect.width() > 4 and self._rect.height() > 4:
-                # Crop the screenshot to the selected rect
-                cropped = self._screenshot.copy(self._rect)
-                # Convert QPixmap -> PIL Image
-                from PIL import Image
-                import io
-                buf = cropped.toImage()
-                buf = buf.convertToFormat(buf.Format_RGB888)
-                w, h = buf.width(), buf.height()
-                ptr = buf.bits()
-                ptr.setsize(h * w * 3)
-                pil_img = Image.frombytes("RGB", (w, h), bytes(ptr))
-                self.snipped.emit(pil_img)
-            else:
+
+            if logical_rect.width() < 4 or logical_rect.height() < 4:
                 self.cancelled.emit()
+                return
+
+            # ── HiDPI fix: scale logical rect → physical pixels ──
+            dpr = self._dpr
+            phys_rect = QRect(
+                int(logical_rect.x()      * dpr),
+                int(logical_rect.y()      * dpr),
+                int(logical_rect.width()  * dpr),
+                int(logical_rect.height() * dpr),
+            )
+
+            cropped   = self._screenshot.copy(phys_rect)
+            pil_img   = qpixmap_to_pil(cropped)
+            self.snipped.emit(pil_img)
+
 
 # ── Drop zone ───────────────────────────────────────────────────────────────────
 
@@ -275,7 +313,6 @@ class DropLabel(QLabel):
 
     def show_pil_preview(self, pil_img):
         import io
-        from PIL import Image
         buf = io.BytesIO()
         pil_img.save(buf, format="PNG")
         pix = QPixmap()
@@ -289,6 +326,7 @@ class DropLabel(QLabel):
             "background:#1a2a1e;padding:4px;}"
         )
         self.setPixmap(pix)
+
 
 # ── Language bar ───────────────────────────────────────────────────────────────────
 
@@ -331,6 +369,7 @@ class LangBar(QWidget):
     def get_langs(self):
         return self._selected
 
+
 # ── Main window ───────────────────────────────────────────────────────────────────
 
 class EasyOCRTester(QWidget):
@@ -338,10 +377,10 @@ class EasyOCRTester(QWidget):
         super().__init__()
         self.setWindowTitle("EasyOCR Tester")
         self.setMinimumSize(580, 680)
-        self._image_path  = None   # file path (Browse/Drop)
-        self._snip_image  = None   # PIL Image (Snip)
-        self._worker      = None
-        self._overlay     = None
+        self._image_path = None
+        self._snip_image = None
+        self._worker     = None
+        self._overlay    = None
         self._build_ui()
         self._detect_gpu()
 
@@ -378,7 +417,6 @@ class EasyOCRTester(QWidget):
         hint.setObjectName("hint")
         root.addWidget(hint)
 
-        # Drop zone card
         drop_card = QFrame(); drop_card.setObjectName("card")
         dc_lay = QVBoxLayout(drop_card); dc_lay.setContentsMargins(12, 12, 12, 12)
         self.drop_zone = DropLabel()
@@ -388,7 +426,7 @@ class EasyOCRTester(QWidget):
         btn_row = QHBoxLayout()
         browse_btn = QPushButton("\U0001f4c2  Browse")
         browse_btn.clicked.connect(self._browse)
-        snip_btn = QPushButton("\u2702\ufe0f  Snip Screen")
+        snip_btn = QPushButton("✂️  Snip Screen")
         snip_btn.setObjectName("snip")
         snip_btn.clicked.connect(self._start_snip)
         clear_btn = QPushButton("✕  Clear")
@@ -472,12 +510,14 @@ class EasyOCRTester(QWidget):
     # ── Snip ───────────────────────────────────────────────────────────────────────
 
     def _start_snip(self):
-        self.hide()  # hide main window so it's not in the screenshot
+        self.hide()
         QApplication.processEvents()
-        # Grab full screen
         screen = QApplication.primaryScreen()
+        # Grab at physical resolution
         screenshot = screen.grabWindow(0)
-        self._overlay = SnipOverlay(screenshot)
+        # Pass the real DPR so the overlay can scale the crop rect
+        dpr = screen.devicePixelRatio()
+        self._overlay = SnipOverlay(screenshot, dpr)
         self._overlay.snipped.connect(self._on_snipped)
         self._overlay.cancelled.connect(self._on_snip_cancelled)
 
@@ -490,7 +530,6 @@ class EasyOCRTester(QWidget):
             f"Snip captured  —  {pil_img.width}×{pil_img.height}px  —  click Extract Text"
         )
         self.result_box.clear()
-        # Auto-run OCR immediately after snipping
         self._run_ocr()
 
     def _on_snip_cancelled(self):
@@ -538,6 +577,7 @@ class EasyOCRTester(QWidget):
         if txt:
             QApplication.clipboard().setText(txt)
             self.status_lbl.setText("Copied to clipboard.")
+
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
