@@ -1,13 +1,62 @@
 """Main application window — frameless with custom title bar."""
 
+import os
+import urllib.request
+import tempfile
+
 from PyQt5.QtWidgets import (
     QMainWindow, QStatusBar, QMessageBox, QApplication,
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
 )
 from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QPalette, QColor, QFont
+from PyQt5.QtGui import QPalette, QColor, QFont, QFontDatabase
 from ui.theme import get as T, set_theme
 from ui.styles import global_qss
+
+
+# ── Font loader — downloads Cinzel from Google Fonts once, caches in temp ─────
+_CINZEL_FONT_ID = None
+
+CINZEL_URL = (
+    "https://fonts.gstatic.com/s/cinzel/v23/"
+    "8vIU7wAr0DxW2FvX_-Q0sz3GovY.woff2"
+)
+
+
+def _load_cinzel() -> str:
+    """Download Cinzel (woff2) once and register it with Qt.
+    Returns font family name or fallback."""
+    global _CINZEL_FONT_ID
+    if _CINZEL_FONT_ID is not None:
+        return _CINZEL_FONT_ID
+
+    # Try a TTF version that Qt can actually embed directly
+    TTF_URL = (
+        "https://fonts.gstatic.com/s/cinzel/v23/"
+        "8vIJ7wAr0DxW2FvX_-QD2KlA.woff"
+    )
+    cache_path = os.path.join(tempfile.gettempdir(), "cinzel_regular.woff")
+    try:
+        if not os.path.exists(cache_path):
+            urllib.request.urlretrieve(TTF_URL, cache_path)
+        fid = QFontDatabase.addApplicationFont(cache_path)
+        if fid >= 0:
+            families = QFontDatabase.applicationFontFamilies(fid)
+            if families:
+                _CINZEL_FONT_ID = families[0]
+                return _CINZEL_FONT_ID
+    except Exception:
+        pass
+
+    # Fallback chain — high-quality serif fonts common on Windows
+    for f in ("Palatino Linotype", "Book Antiqua", "Palatino",
+              "Georgia", "Times New Roman"):
+        if QFontDatabase().hasFamily(f):
+            _CINZEL_FONT_ID = f
+            return f
+
+    _CINZEL_FONT_ID = "Georgia"
+    return "Georgia"
 
 
 def apply_dark_palette(widget):
@@ -29,48 +78,69 @@ def apply_dark_palette(widget):
 # ── Custom title bar ──────────────────────────────────────────────────────────
 
 class TitleBar(QWidget):
-    """Drag-able title bar with minimize / maximize / close."""
+    """Drag-able title bar with fancy centered app name + window controls."""
 
-    HEIGHT = 38
+    HEIGHT = 42
 
     def __init__(self, parent: QMainWindow):
         super().__init__(parent)
         self._win = parent
         self._drag_pos = None
         self.setFixedHeight(self.HEIGHT)
+        self._display_font = _load_cinzel()
         self._build()
 
     def _build(self):
         d = T()
         self.setStyleSheet(
             f"background:{d['surface2']};"
-            "border-bottom:1px solid #1a1a1a;"
+            "border-bottom:1px solid #111;"
         )
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 0, 4, 0)
+        lay.setContentsMargins(4, 0, 4, 0)
         lay.setSpacing(0)
 
-        self._title_lbl = QLabel("Local Helper")
-        self._title_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        self._title_lbl.setStyleSheet(f"color:{d['text']};background:transparent;")
-        lay.addWidget(self._title_lbl)
+        # ── Left spacer (same width as right controls so title stays centred) ─
+        self._left_spacer = QWidget()
+        self._left_spacer.setFixedWidth(128)   # 3 buttons × ~40px + padding
+        lay.addWidget(self._left_spacer)
+
         lay.addStretch()
 
+        # ── App title — centred, fancy serif font ─────────────────────────
+        self._title_lbl = QLabel("Local Helper")
+        title_font = QFont(self._display_font, 13)
+        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.5)
+        title_font.setWeight(QFont.Medium)
+        self._title_lbl.setFont(title_font)
+        self._title_lbl.setAlignment(Qt.AlignCenter)
+        self._title_lbl.setStyleSheet(
+            f"""
+            color: {d.get('accent', '#2dd4bf')};
+            background: transparent;
+            letter-spacing: 2px;
+            """
+        )
+        lay.addWidget(self._title_lbl)
+
+        lay.addStretch()
+
+        # ── Window controls (right side) ────────────────────────────────
         btn_css = (
             "QPushButton{{"
             "background:transparent;color:{fg};"
-            "border:none;font-size:15px;"
+            "border:none;font-size:14px;"
             "min-width:40px;min-height:" + str(self.HEIGHT) + "px;padding:0;}}"
             "QPushButton:hover{{background:{hover};}}"
         )
 
         self._btn_min = QPushButton("⎯")
-        self._btn_min.setStyleSheet(btn_css.format(fg=d["muted"], hover="#333"))
+        self._btn_min.setStyleSheet(btn_css.format(fg=d["muted"], hover="#2a2a2a"))
         self._btn_min.setToolTip("Minimize")
         self._btn_min.clicked.connect(self._win.showMinimized)
 
         self._btn_max = QPushButton("□")
-        self._btn_max.setStyleSheet(btn_css.format(fg=d["muted"], hover="#333"))
+        self._btn_max.setStyleSheet(btn_css.format(fg=d["muted"], hover="#2a2a2a"))
         self._btn_max.setToolTip("Maximize / Restore")
         self._btn_max.clicked.connect(self._toggle_max)
 
@@ -114,10 +184,12 @@ class TitleBar(QWidget):
 
     def update_theme(self):
         d = T()
-        self._title_lbl.setStyleSheet(f"color:{d['text']};background:transparent;")
         self.setStyleSheet(
             f"background:{d['surface2']};"
-            "border-bottom:1px solid #1a1a1a;"
+            "border-bottom:1px solid #111;"
+        )
+        self._title_lbl.setStyleSheet(
+            f"color:{d.get('accent', '#2dd4bf')};background:transparent;"
         )
 
 
@@ -126,7 +198,6 @@ class TitleBar(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, layout: str = "Tabbed"):
         super().__init__()
-        # Frameless: remove the native OS title bar entirely
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setWindowTitle("Local Helper")
         self.resize(1320, 860)
@@ -141,16 +212,8 @@ class MainWindow(QMainWindow):
         self.setFont(QFont("Segoe UI", 10))
 
     def _build_shell(self, layout_name: str):
-        """
-        Structure:
-            QMainWindow.centralWidget
-              └─ QWidget (shell)
-                   ├─ TitleBar          (fixed 38 px)
-                   └─ layout_widget     (fills rest)
-        """
         self._title_bar = TitleBar(self)
 
-        # Load the real layout widget
         if layout_name == "Sidebar":
             from ui.layout_sidebar import SidebarLayout
             self._layout_widget = SidebarLayout(self)
@@ -158,14 +221,12 @@ class MainWindow(QMainWindow):
             from ui.layout_tabbed import TabbedLayout
             self._layout_widget = TabbedLayout(self)
 
-        # Wrap title bar + layout in a plain QWidget
         shell = QWidget()
         vbox = QVBoxLayout(shell)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
         vbox.addWidget(self._title_bar)
         vbox.addWidget(self._layout_widget)
-
         self.setCentralWidget(shell)
 
     def _build_statusbar(self):
@@ -174,7 +235,7 @@ class MainWindow(QMainWindow):
         label = "📌 Sidebar" if self._layout_name == "Sidebar" else "📌 Tabbed"
         self.status.showMessage(f"Ready  ·  {label}")
 
-    # ── Edge resize (frameless windows lose native resize handles) ──────────────
+    # ── Edge resize ────────────────────────────────────────────────────────────
     def mousePressEvent(self, event):
         self._resize_edge = self._get_edge(event.pos())
         if self._resize_edge:
@@ -210,7 +271,7 @@ class MainWindow(QMainWindow):
         if on_right:                return "right"
         return None
 
-    # ── Close: kill LibreTranslate if running ──────────────────────────────────
+    # ── Close ───────────────────────────────────────────────────────────────
     def closeEvent(self, event):
         try:
             from ui.tab_settings import _lt_process
@@ -220,7 +281,7 @@ class MainWindow(QMainWindow):
             pass
         event.accept()
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────────────
     def set_status(self, msg: str):
         self.status.showMessage(msg)
 
@@ -238,8 +299,7 @@ class MainWindow(QMainWindow):
         if new_layout == self._layout_name:
             return
         reply = QMessageBox.question(
-            self,
-            "Restart required",
+            self, "Restart required",
             f"Switch to {new_layout} layout?\n\nThe app will close. Please relaunch it.",
             QMessageBox.Ok | QMessageBox.Cancel
         )

@@ -1,8 +1,15 @@
 """Entry point for Local Helper."""
 
-# ── CRITICAL: pre-load torch c10.dll BEFORE any PyQt5 import ──────────────────
+# ── Silence urllib3/chardet version mismatch warning from requests ────────────
+import warnings
+warnings.filterwarnings("ignore", category=Warning, module="requests")
+warnings.filterwarnings("ignore", message="urllib3", category=Warning)
+warnings.filterwarnings("ignore", message="chardet", category=Warning)
+warnings.filterwarnings("ignore", message="charset_normalizer", category=Warning)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── CRITICAL: pre-load torch c10.dll BEFORE any PyQt5 import ─────────────────
 # PyTorch 2.9+ on Windows raises [WinError 1114] if PyQt5 is loaded first.
-# Fix: https://github.com/pytorch/pytorch/issues/166628
 import platform as _platform
 if _platform.system() == "Windows":
     import ctypes as _ctypes
@@ -16,7 +23,7 @@ if _platform.system() == "Windows":
                 _ctypes.CDLL(_os.path.normpath(_dll))
     except Exception:
         pass
-# ──────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 import sys
 import os
