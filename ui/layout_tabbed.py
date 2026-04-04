@@ -13,6 +13,7 @@ from ui.tab_agents   import AgentsTab
 from ui.tab_discover import DiscoverTab
 from ui.tab_tips     import TipsTab
 from ui.tab_settings import SettingsTab
+from ui.tab_ocr      import OCRTab
 
 
 class TabbedLayout(QWidget):
@@ -20,9 +21,10 @@ class TabbedLayout(QWidget):
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
-        self._mw = main_window   # reference to MainWindow for status bar access
+        self._mw = main_window
         self._build_menu()
         self._build_ui()
+        self._wire_ocr()
 
     # ── Menu bar ─────────────────────────────────────────────────────
     def _build_menu(self):
@@ -45,7 +47,7 @@ class TabbedLayout(QWidget):
         file_menu.addAction(act_quit)
 
         view_menu = mb.addMenu("View")
-        for i, label in enumerate(["General Chat", "Agents", "Discover", "Tips", "Settings"]):
+        for i, label in enumerate(["General Chat", "Agents", "Discover", "Tips", "OCR", "Settings"]):
             a = QAction(label, self._mw)
             a.triggered.connect(lambda checked, x=i: self._tabs.setCurrentIndex(x))
             view_menu.addAction(a)
@@ -81,18 +83,32 @@ class TabbedLayout(QWidget):
         self.tab_agents   = AgentsTab()
         self.tab_discover = DiscoverTab()
         self.tab_tips     = TipsTab()
+        self.tab_ocr      = OCRTab()
         self.tab_settings = SettingsTab()
 
         self._tabs.addTab(self.tab_general,  "💬  General Chat")
         self._tabs.addTab(self.tab_agents,   "🤖  Agents")
         self._tabs.addTab(self.tab_discover, "🔭  Discover")
         self._tabs.addTab(self.tab_tips,     "💡  Tips")
+        self._tabs.addTab(self.tab_ocr,      "🔍  OCR")
         self._tabs.addTab(self.tab_settings, "⚙️  Settings")
 
         self.tab_settings.theme_changed.connect(self._mw.reapply_theme)
         self.tab_settings.layout_changed.connect(self._mw.on_layout_change_requested)
 
         root.addWidget(self._tabs)
+
+    def _wire_ocr(self):
+        """Connect OCRWidget's 'Insert into Chat' signal to the active chat panel."""
+        try:
+            chat_panel = self.tab_general.chat_panel
+            self.tab_ocr.ocr_widget.text_ready.connect(chat_panel.insert_ocr_text)
+            # Also switch to chat tab so the user sees the inserted text
+            self.tab_ocr.ocr_widget.text_ready.connect(
+                lambda _: self._tabs.setCurrentIndex(0)
+            )
+        except Exception:
+            pass
 
     def navigate(self, index: int):
         self._tabs.setCurrentIndex(index)
