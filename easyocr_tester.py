@@ -1,5 +1,6 @@
 import sys
 import os
+import tempfile
 
 # ── CRITICAL: Pre-load torch c10.dll BEFORE PyQt5 imports ──────────────────────────
 # PyTorch 2.9+ on Windows crashes with [WinError 1114] if PyQt is imported first.
@@ -20,10 +21,10 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog,
-    QProgressBar, QFrame, QCheckBox
+    QProgressBar, QFrame, QCheckBox, QRubberBand
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QPixmap, QDragEnterEvent, QDropEvent
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize
+from PyQt5.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor, QPainter, QPen, QScreen
 
 # ── Dark theme ──────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,14 @@ QPushButton#primary {
 }
 QPushButton#primary:hover { background-color: #7a4dd4; }
 QPushButton#primary:pressed { background-color: #5a34a8; }
+QPushButton#snip {
+    background-color: #1a3a2a;
+    color: #60c090;
+    border: 1px solid #2a5a3a;
+    font-weight: 600;
+}
+QPushButton#snip:hover { background-color: #1e4a30; border-color: #3a7a50; }
+QPushButton#snip:pressed { background-color: #163020; }
 QPushButton#danger {
     background-color: #3a1a1a;
     color: #e06060;
@@ -104,16 +113,17 @@ LANGS = [
     ("RU ⚠",  ["ru", "en"]),  # Cyrillic — isolated reader
 ]
 
-# ── OCR worker thread ─────────────────────────────────────────────────────
+# ── OCR worker ─────────────────────────────────────────────────────────────────────
 
 class OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, image_path, langs, use_gpu):
+    def __init__(self, source, langs, use_gpu):
+        """source: file path (str) OR PIL Image / numpy array."""
         super().__init__()
-        self.image_path = image_path
-        self.langs = langs
+        self.source  = source
+        self.langs   = langs
         self.use_gpu = use_gpu
 
     def run(self):
@@ -121,13 +131,96 @@ class OCRWorker(QThread):
             import easyocr
             from PIL import Image
             reader = easyocr.Reader(self.langs, gpu=self.use_gpu)
-            img = np.array(Image.open(self.image_path).convert("RGB"))
+            if isinstance(self.source, str):
+                img = np.array(Image.open(self.source).convert("RGB"))
+            else:
+                img = np.array(self.source.convert("RGB"))
             results = reader.readtext(img, detail=0, paragraph=True)
             self.finished.emit("\n".join(results) if results else "[No text detected]")
         except ImportError:
             self.error.emit("easyocr not installed.\nRun: pip install easyocr")
         except Exception as e:
             self.error.emit(str(e))
+
+# ── Snip overlay ───────────────────────────────────────────────────────────────────
+
+class SnipOverlay(QWidget):
+    """Full-screen semi-transparent overlay for drawing a snip rectangle."""
+    snipped = pyqtSignal(object)   # emits PIL Image of the cropped region
+    cancelled = pyqtSignal()
+
+    def __init__(self, screenshot):
+        super().__init__()
+        self._screenshot = screenshot   # QPixmap of full screen
+        self._origin = QPoint()
+        self._rect   = QRect()
+        self._rubber = None
+        self._drawing = False
+
+        self.setWindowFlags(
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setCursor(Qt.CrossCursor)
+        self.setGeometry(QApplication.primaryScreen().geometry())
+        self.showFullScreen()
+
+    def paintEvent(self, _):
+        painter = QPainter(self)
+        # Dim overlay
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        # Draw bright selection rectangle
+        if not self._rect.isNull():
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter.fillRect(self._rect.normalized(), QColor(0, 0, 0, 0))
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            pen = QPen(QColor(108, 63, 197), 2)
+            painter.setPen(pen)
+            painter.drawRect(self._rect.normalized())
+        # Instruction text
+        painter.setPen(QColor(200, 200, 200))
+        painter.drawText(self.rect().adjusted(0, 20, 0, 0),
+                         Qt.AlignHCenter | Qt.AlignTop,
+                         "Draw a rectangle to snip  —  Esc to cancel")
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close()
+            self.cancelled.emit()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._origin  = e.pos()
+            self._rect    = QRect(self._origin, QSize())
+            self._drawing = True
+
+    def mouseMoveEvent(self, e):
+        if self._drawing:
+            self._rect = QRect(self._origin, e.pos()).normalized()
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._drawing:
+            self._drawing = False
+            self._rect = QRect(self._origin, e.pos()).normalized()
+            self.close()
+            if self._rect.width() > 4 and self._rect.height() > 4:
+                # Crop the screenshot to the selected rect
+                cropped = self._screenshot.copy(self._rect)
+                # Convert QPixmap -> PIL Image
+                from PIL import Image
+                import io
+                buf = cropped.toImage()
+                buf = buf.convertToFormat(buf.Format_RGB888)
+                w, h = buf.width(), buf.height()
+                ptr = buf.bits()
+                ptr.setsize(h * w * 3)
+                pil_img = Image.frombytes("RGB", (w, h), bytes(ptr))
+                self.snipped.emit(pil_img)
+            else:
+                self.cancelled.emit()
 
 # ── Drop zone ───────────────────────────────────────────────────────────────────
 
@@ -139,12 +232,12 @@ class DropLabel(QLabel):
         super().__init__()
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(140)
         self._set_idle()
 
     def _set_idle(self):
         self.setPixmap(QPixmap())
-        self.setText("\n\n\U0001f5bc  Drop an image here\nor click Browse\n")
+        self.setText("\n\n\U0001f5bc  Drop an image here\nor use Browse / Snip\n")
         self.setStyleSheet(
             "QLabel{border:2px dashed #3a3a3a;border-radius:10px;"
             "background:#1e1e1e;color:#555;font-size:13px;}"
@@ -171,12 +264,29 @@ class DropLabel(QLabel):
 
     def show_preview(self, path):
         pix = QPixmap(path).scaledToWidth(380, Qt.SmoothTransformation)
-        if pix.height() > 160:
-            pix = pix.scaledToHeight(160, Qt.SmoothTransformation)
+        if pix.height() > 140:
+            pix = pix.scaledToHeight(140, Qt.SmoothTransformation)
         self.setText("")
         self.setStyleSheet(
             "QLabel{border:1px solid #333;border-radius:10px;"
             "background:#1e1e1e;padding:4px;}"
+        )
+        self.setPixmap(pix)
+
+    def show_pil_preview(self, pil_img):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        pil_img.save(buf, format="PNG")
+        pix = QPixmap()
+        pix.loadFromData(buf.getvalue())
+        pix = pix.scaledToWidth(380, Qt.SmoothTransformation)
+        if pix.height() > 140:
+            pix = pix.scaledToHeight(140, Qt.SmoothTransformation)
+        self.setText("")
+        self.setStyleSheet(
+            "QLabel{border:1px solid #2a5a3a;border-radius:10px;"
+            "background:#1a2a1e;padding:4px;}"
         )
         self.setPixmap(pix)
 
@@ -227,9 +337,11 @@ class EasyOCRTester(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EasyOCR Tester")
-        self.setMinimumSize(560, 660)
-        self._image_path = None
-        self._worker = None
+        self.setMinimumSize(580, 680)
+        self._image_path  = None   # file path (Browse/Drop)
+        self._snip_image  = None   # PIL Image (Snip)
+        self._worker      = None
+        self._overlay     = None
         self._build_ui()
         self._detect_gpu()
 
@@ -262,25 +374,31 @@ class EasyOCRTester(QWidget):
         title = QLabel("EasyOCR Tester")
         title.setObjectName("title_lbl")
         root.addWidget(title)
-        hint = QLabel("Test EasyOCR on any image — drop an image or use Browse")
+        hint = QLabel("Drop an image, browse a file, or snip the screen — then extract text")
         hint.setObjectName("hint")
         root.addWidget(hint)
 
+        # Drop zone card
         drop_card = QFrame(); drop_card.setObjectName("card")
         dc_lay = QVBoxLayout(drop_card); dc_lay.setContentsMargins(12, 12, 12, 12)
         self.drop_zone = DropLabel()
         self.drop_zone.file_dropped.connect(self._load_image)
         dc_lay.addWidget(self.drop_zone)
-        browse_row = QHBoxLayout()
-        browse_btn = QPushButton("\U0001f4c2  Browse Image")
+
+        btn_row = QHBoxLayout()
+        browse_btn = QPushButton("\U0001f4c2  Browse")
         browse_btn.clicked.connect(self._browse)
+        snip_btn = QPushButton("\u2702\ufe0f  Snip Screen")
+        snip_btn.setObjectName("snip")
+        snip_btn.clicked.connect(self._start_snip)
         clear_btn = QPushButton("✕  Clear")
         clear_btn.setObjectName("danger")
         clear_btn.clicked.connect(self._clear)
-        browse_row.addWidget(browse_btn)
-        browse_row.addWidget(clear_btn)
-        browse_row.addStretch()
-        dc_lay.addLayout(browse_row)
+        btn_row.addWidget(browse_btn)
+        btn_row.addWidget(snip_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        dc_lay.addLayout(btn_row)
         root.addWidget(drop_card)
 
         self.lang_bar = LangBar()
@@ -307,8 +425,7 @@ class EasyOCRTester(QWidget):
 
         result_card = QFrame(); result_card.setObjectName("card")
         rc_lay = QVBoxLayout(result_card)
-        rc_lay.setContentsMargins(12, 12, 12, 12)
-        rc_lay.setSpacing(6)
+        rc_lay.setContentsMargins(12, 12, 12, 12); rc_lay.setSpacing(6)
         res_hdr = QHBoxLayout()
         res_lbl = QLabel("Extracted Text")
         res_lbl.setStyleSheet("font-weight:600;font-size:12px;color:#aaa;")
@@ -320,15 +437,15 @@ class EasyOCRTester(QWidget):
             "QPushButton:hover{background:#333;color:#e0e0e0;}"
         )
         copy_btn.clicked.connect(self._copy)
-        res_hdr.addWidget(res_lbl)
-        res_hdr.addStretch()
-        res_hdr.addWidget(copy_btn)
+        res_hdr.addWidget(res_lbl); res_hdr.addStretch(); res_hdr.addWidget(copy_btn)
         rc_lay.addLayout(res_hdr)
         self.result_box = QTextEdit()
         self.result_box.setPlaceholderText("OCR result will appear here…")
         self.result_box.setMinimumHeight(180)
         rc_lay.addWidget(self.result_box)
         root.addWidget(result_card)
+
+    # ── Browse / Drop ──────────────────────────────────────────────────
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -340,31 +457,64 @@ class EasyOCRTester(QWidget):
 
     def _load_image(self, path):
         self._image_path = path
+        self._snip_image = None
         self.drop_zone.show_preview(path)
         self.status_lbl.setText(f"Loaded: {os.path.basename(path)}")
         self.result_box.clear()
 
     def _clear(self):
         self._image_path = None
+        self._snip_image = None
         self.drop_zone._set_idle()
         self.result_box.clear()
         self.status_lbl.setText("No image loaded.")
 
+    # ── Snip ───────────────────────────────────────────────────────────────────────
+
+    def _start_snip(self):
+        self.hide()  # hide main window so it's not in the screenshot
+        QApplication.processEvents()
+        # Grab full screen
+        screen = QApplication.primaryScreen()
+        screenshot = screen.grabWindow(0)
+        self._overlay = SnipOverlay(screenshot)
+        self._overlay.snipped.connect(self._on_snipped)
+        self._overlay.cancelled.connect(self._on_snip_cancelled)
+
+    def _on_snipped(self, pil_img):
+        self.show()
+        self._snip_image = pil_img
+        self._image_path = None
+        self.drop_zone.show_pil_preview(pil_img)
+        self.status_lbl.setText(
+            f"Snip captured  —  {pil_img.width}×{pil_img.height}px  —  click Extract Text"
+        )
+        self.result_box.clear()
+        # Auto-run OCR immediately after snipping
+        self._run_ocr()
+
+    def _on_snip_cancelled(self):
+        self.show()
+        self.status_lbl.setText("Snip cancelled.")
+
+    # ── OCR ───────────────────────────────────────────────────────────────────────
+
     def _run_ocr(self):
-        if not self._image_path:
-            self.status_lbl.setText("⚠  Please load an image first.")
+        source = self._snip_image if self._snip_image else self._image_path
+        if source is None:
+            self.status_lbl.setText("⚠  Please load an image or snip the screen first.")
             return
         if self._worker and self._worker.isRunning():
             return
-        langs = self.lang_bar.get_langs()
-        use_gpu = self.gpu_check.isChecked() and self.gpu_check.isEnabled()
+        langs    = self.lang_bar.get_langs()
+        use_gpu  = self.gpu_check.isChecked() and self.gpu_check.isEnabled()
         mode_str = "GPU" if use_gpu else "CPU"
         self.run_btn.setEnabled(False)
         self.progress.show()
         self.status_lbl.setText(
-            f"Running EasyOCR [{mode_str}] ({', '.join(langs)}) — first run loads model…"
+            f"Running EasyOCR [{mode_str}] ({', '.join(langs)}) — please wait…"
         )
-        self._worker = OCRWorker(self._image_path, langs, use_gpu)
+        self._worker = OCRWorker(source, langs, use_gpu)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
