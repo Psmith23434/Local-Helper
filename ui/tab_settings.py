@@ -7,7 +7,7 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QLineEdit, QSpinBox, QGroupBox, QMessageBox,
-    QSlider, QScrollArea, QFrame, QPlainTextEdit
+    QSlider, QScrollArea, QFrame, QPlainTextEdit, QSizePolicy
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
@@ -15,13 +15,10 @@ import database as db
 from ui.theme import get as T, set_theme, names as theme_names, name as theme_name
 from ui.styles import accent_btn_qss
 
-# Module-level reference to the LibreTranslate background process
 _lt_process = None
 
 
-# ── Log reader thread ──────────────────────────────────────────────────────────────
 class _LogReader(QThread):
-    """Reads stdout+stderr of a subprocess and emits lines as signals."""
     line_ready = pyqtSignal(str)
 
     def __init__(self, proc):
@@ -40,18 +37,16 @@ class _LogReader(QThread):
         self._running = False
 
 
-# ── Model fetch thread ─────────────────────────────────────────────────────────────
 class _ModelFetcher(QThread):
-    """Fetches available model IDs from the proxy /models endpoint in a background thread."""
-    models_ready = pyqtSignal(list)   # emits list[str] of model IDs
+    models_ready = pyqtSignal(list)
     error        = pyqtSignal(str)
 
     def run(self):
         try:
             import requests
             import config
-            base = getattr(config, "BASE_URL", "").rstrip("/")
-            api_key = getattr(config, "API_KEY", "")
+            base    = getattr(config, "BASE_URL",  "").rstrip("/")
+            api_key = getattr(config, "API_KEY",   "")
             if not base:
                 self.error.emit("BASE_URL not set in config.py")
                 return
@@ -61,16 +56,13 @@ class _ModelFetcher(QThread):
             resp = requests.get(f"{base}/models", headers=headers, timeout=8)
             resp.raise_for_status()
             data = resp.json()
-            # OpenAI-compatible: {"data": [{"id": "..."}]}
-            # or flat list: ["model-a", "model-b"]
             if isinstance(data, dict) and "data" in data:
                 ids = [m["id"] for m in data["data"] if isinstance(m, dict) and "id" in m]
             elif isinstance(data, list):
                 ids = [m if isinstance(m, str) else m.get("id", "") for m in data]
             else:
                 ids = []
-            ids = sorted(filter(None, ids))
-            self.models_ready.emit(ids)
+            self.models_ready.emit(sorted(filter(None, ids)))
         except Exception as e:
             self.error.emit(str(e))
 
@@ -81,7 +73,7 @@ class SettingsTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._log_reader   = None
+        self._log_reader    = None
         self._model_fetcher = None
         self._build_ui()
 
@@ -100,13 +92,12 @@ class SettingsTab(QWidget):
         cl.setContentsMargins(40, 30, 40, 40)
         cl.setSpacing(20)
 
-        # Title
         h = QLabel("⚙️  Settings")
         h.setFont(QFont("Segoe UI", 22, QFont.Bold))
         h.setStyleSheet(f"color:{d['text']};")
         cl.addWidget(h)
 
-        # ── Appearance ───────────────────────────────────────────────────────────────
+        # ── Appearance ──────────────────────────────────────────────────────────────
         grp_appear = self._group("Appearance")
         gl = QVBoxLayout(grp_appear)
         gl.setSpacing(10)
@@ -134,9 +125,7 @@ class SettingsTab(QWidget):
         self.font_size_lbl = QLabel("10 px")
         self.font_size_lbl.setFixedWidth(40)
         self.font_size_lbl.setStyleSheet(f"color:{d['muted']};")
-        self.font_slider.valueChanged.connect(
-            lambda v: self.font_size_lbl.setText(f"{v} px")
-        )
+        self.font_slider.valueChanged.connect(lambda v: self.font_size_lbl.setText(f"{v} px"))
         row2.addWidget(self.font_slider)
         row2.addWidget(self.font_size_lbl)
         row2.addStretch()
@@ -166,7 +155,7 @@ class SettingsTab(QWidget):
         gl.addLayout(row3)
         cl.addWidget(grp_appear)
 
-        # ── API / Proxy ──────────────────────────────────────────────────────────────
+        # ── AI Proxy ─────────────────────────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
@@ -182,18 +171,24 @@ class SettingsTab(QWidget):
         self._load_config_value("API_KEY", self.api_key)
         al.addWidget(self.api_key)
 
-        # — Default model: dropdown populated from /models + manual fallback —
         al.addWidget(self._lbl(
-            "Default Model  —  select from list or type manually. "
-            "Click \"Fetch models\" to load available models from your proxy."
+            "Default Model  —  click \"Fetch models\" to load from your proxy, then select from the list."
         ))
+
+        # Model combo + fetch button on same row
         model_row = QHBoxLayout()
         self.default_model_combo = QComboBox()
-        self.default_model_combo.setEditable(True)          # allow typing custom names
-        self.default_model_combo.setInsertPolicy(QComboBox.InsertAtTop)
-        self.default_model_combo.setMinimumWidth(280)
-        self.default_model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        # Pre-populate with the currently saved model
+        self.default_model_combo.setEditable(True)
+        self.default_model_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.default_model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.default_model_combo.setMinimumWidth(340)
+        self.default_model_combo.setStyleSheet(
+            f"QComboBox {{ background:{d['surface2']}; border:1px solid {d['border']};"
+            f" border-radius:6px; padding:5px 8px; color:{d['text']}; font-size:12px; }}"
+            f"QComboBox QAbstractItemView {{ background:{d['surface']}; color:{d['text']};"
+            f" border:1px solid {d['border']}; selection-background-color:{d['accent']};"
+            f" min-width:400px; }}"
+        )
         try:
             import config
             saved = getattr(config, "DEFAULT_MODEL", "")
@@ -205,7 +200,8 @@ class SettingsTab(QWidget):
         model_row.addWidget(self.default_model_combo, stretch=1)
 
         self._fetch_models_btn = QPushButton("🔄  Fetch models")
-        self._fetch_models_btn.setFixedHeight(28)
+        self._fetch_models_btn.setFixedHeight(32)
+        self._fetch_models_btn.setFixedWidth(130)
         self._fetch_models_btn.setToolTip("Query BASE_URL/models and populate the dropdown")
         self._fetch_models_btn.clicked.connect(self._fetch_models)
         model_row.addWidget(self._fetch_models_btn)
@@ -242,7 +238,6 @@ class SettingsTab(QWidget):
         backend_row.addStretch()
         tl.addLayout(backend_row)
 
-        # — LibreTranslate sub-section —
         self._lt_section = QWidget()
         lt_lay = QVBoxLayout(self._lt_section)
         lt_lay.setContentsMargins(0, 0, 0, 0)
@@ -259,7 +254,6 @@ class SettingsTab(QWidget):
 
         lt_lay.addWidget(self._lbl(
             "Languages to download/load  —  comma-separated codes.  "
-            "Only these pairs will be available; keeps download small (~200–400 MB instead of ~7 GB).  "
             "Example: de,en,ru,es,fr,tr,pl,it"
         ))
         self.lt_langs = QLineEdit()
@@ -270,12 +264,10 @@ class SettingsTab(QWidget):
         lt_lay.addWidget(self.lt_langs)
 
         lt_lay.addWidget(self._lbl(
-            "Click ▶ Start to run LibreTranslate locally (no Docker needed).  "
-            "First launch downloads the chosen language models — watch the log below.  "
-            "Runs in background until you click ■ Stop or close the app."
+            "Click ▶ Start to run LibreTranslate locally (no Docker needed). "
+            "First launch downloads models — watch the log below."
         ))
         lt_btn_row = QHBoxLayout()
-
         self._lt_start_btn = QPushButton("▶  Start LibreTranslate")
         self._lt_start_btn.setFixedHeight(32)
         self._lt_start_btn.setStyleSheet(
@@ -299,14 +291,13 @@ class SettingsTab(QWidget):
 
         self._lt_status_lbl = QLabel("Not running")
         self._lt_status_lbl.setStyleSheet("color:#666;font-size:11px;")
-
         lt_btn_row.addWidget(self._lt_start_btn)
         lt_btn_row.addWidget(self._lt_stop_btn)
         lt_btn_row.addWidget(self._lt_status_lbl)
         lt_btn_row.addStretch()
         lt_lay.addLayout(lt_btn_row)
 
-        lt_lay.addWidget(self._lbl("Live log (shows download progress and errors):"))
+        lt_lay.addWidget(self._lbl("Live log:"))
         self._lt_log = QPlainTextEdit()
         self._lt_log.setReadOnly(True)
         self._lt_log.setFixedHeight(120)
@@ -315,20 +306,17 @@ class SettingsTab(QWidget):
             "border:1px solid #2a2a2a;border-radius:6px;"
             "font-family:Consolas,monospace;font-size:11px;padding:4px;}"
         )
-        self._lt_log.setPlaceholderText("Log output will appear here when LibreTranslate is running…")
+        self._lt_log.setPlaceholderText("Log output will appear here…")
         lt_lay.addWidget(self._lt_log)
         tl.addWidget(self._lt_section)
 
-        # — Default target language —
-        tl.addWidget(self._lbl("Default target language (shown in the Translate panel)"))
+        tl.addWidget(self._lbl("Default target language"))
         self.trans_lang_combo = QComboBox()
         self.trans_lang_combo.setFixedWidth(220)
         try:
             import translator as TR
-            self.trans_lang_combo.addItems(TR.LANG_NAMES[1:])  # skip Auto-detect
-            default = TR.code_to_name(
-                self._read_config_str("TRANSLATE_TARGET_LANG", "en")
-            )
+            self.trans_lang_combo.addItems(TR.LANG_NAMES[1:])
+            default = TR.code_to_name(self._read_config_str("TRANSLATE_TARGET_LANG", "en"))
             idx = self.trans_lang_combo.findText(default)
             if idx >= 0:
                 self.trans_lang_combo.setCurrentIndex(idx)
@@ -342,7 +330,6 @@ class SettingsTab(QWidget):
         btn_save_trans.clicked.connect(self._save_trans)
         tl.addWidget(btn_save_trans)
         cl.addWidget(grp_trans)
-
         self._on_backend_changed(self.backend_combo.currentIndex())
 
         # ── GitHub ────────────────────────────────────────────────────────────────────
@@ -361,7 +348,7 @@ class SettingsTab(QWidget):
         ghl.addWidget(btn_save_gh)
         cl.addWidget(grp_gh)
 
-        # ── Web Search ──────────────────────────────────────────────────────────────────
+        # ── Web Search ─────────────────────────────────────────────────────────────────
         grp_ws = self._group("Web Search")
         wl = QVBoxLayout(grp_ws)
         wl.setSpacing(10)
@@ -377,7 +364,7 @@ class SettingsTab(QWidget):
         wl.addWidget(btn_save_ws)
         cl.addWidget(grp_ws)
 
-        # ── Danger zone ──────────────────────────────────────────────────────────────────
+        # ── Danger zone ─────────────────────────────────────────────────────────────────
         grp_danger = self._group("Danger Zone")
         grp_danger.setStyleSheet(
             f"QGroupBox{{border:1px solid {d['red']};border-radius:8px;"
@@ -419,96 +406,70 @@ class SettingsTab(QWidget):
         current = self.default_model_combo.currentText()
         self.default_model_combo.clear()
         self.default_model_combo.addItems(models)
-        # Restore previous selection if still present
+        # Restore previous selection if still present, otherwise keep first
         idx = self.default_model_combo.findText(current)
-        if idx >= 0:
-            self.default_model_combo.setCurrentIndex(idx)
-        self._model_status_lbl.setText(f"✓ {len(models)} model(s) loaded")
+        self.default_model_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._model_status_lbl.setText(f"✓ {len(models)} models loaded — select below")
 
     def _on_models_error(self, msg: str):
         self._fetch_models_btn.setEnabled(True)
         self._model_status_lbl.setText(f"✗ {msg}")
 
-    # ── Backend visibility toggle ─────────────────────────────────────────────────────
+    # ── Backend toggle ────────────────────────────────────────────────────────────────
     def _on_backend_changed(self, idx: int):
         self._lt_section.setVisible(idx == 0)
 
-    # ── LibreTranslate process management ──────────────────────────────────────────────
+    # ── LibreTranslate process ──────────────────────────────────────────────────────────
     def _find_libretranslate_exe(self) -> str | None:
         scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
         for name in ("libretranslate", "libretranslate.exe"):
             candidate = os.path.join(scripts, name)
             if os.path.isfile(candidate):
                 return candidate
-        found = shutil.which("libretranslate")
-        if found:
-            return found
-        return None
+        return shutil.which("libretranslate")
 
     def _start_libretranslate(self):
         global _lt_process
         if _lt_process is not None and _lt_process.poll() is None:
             self._lt_log_append("[info] Already running.")
-            self._lt_status_lbl.setText("Already running")
             return
-
         exe = self._find_libretranslate_exe()
         if exe is None:
-            QMessageBox.warning(
-                self, "LibreTranslate not found",
-                "Could not locate the libretranslate executable.\n\n"
-                "Install it first:\n\n    pip install libretranslate\n\n"
-                "Then restart this app and try again."
-            )
+            QMessageBox.warning(self, "LibreTranslate not found",
+                "Could not locate libretranslate.\n\nInstall: pip install libretranslate")
             return
-
         url = self.lt_url.text().strip() or "http://localhost:5000"
         host, port = "127.0.0.1", "5000"
         try:
-            after_scheme = url.split("//")[-1]
-            if ":" in after_scheme:
-                parts = after_scheme.split(":")
+            after = url.split("//")[-1]
+            if ":" in after:
+                parts = after.split(":")
                 host  = parts[0] or "127.0.0.1"
                 port  = parts[1].split("/")[0] or "5000"
             else:
-                host = after_scheme.split("/")[0] or "127.0.0.1"
+                host = after.split("/")[0] or "127.0.0.1"
         except Exception:
             pass
-
-        langs_raw = self.lt_langs.text().strip()
-        langs = ",".join(c.strip() for c in langs_raw.split(",") if c.strip()) \
-                if langs_raw else "de,en,ru,es,fr,tr,pl,it"
-
+        langs = self.lt_langs.text().strip() or "de,en,ru,es,fr,tr,pl,it"
         cmd = [exe, "--host", host, "--port", port, "--load-only", langs]
         self._lt_log.clear()
         self._lt_log_append(f"[start] {' '.join(cmd)}")
-        self._lt_log_append(f"[info] Loading languages: {langs}")
-        self._lt_log_append("[info] First run downloads models — this can take several minutes…")
-
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
-
         try:
-            _lt_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
+            _lt_process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, env=env)
         except Exception as e:
-            self._lt_log_append(f"[error] Failed to start: {e}")
+            self._lt_log_append(f"[error] {e}")
             return
-
         self._log_reader = _LogReader(_lt_process)
         self._log_reader.line_ready.connect(self._lt_log_append)
         self._log_reader.start()
-
         self._lt_start_btn.setEnabled(False)
         self._lt_stop_btn.setEnabled(True)
         self._lt_status_lbl.setText("⏳ Starting…")
         self._lt_status_lbl.setStyleSheet("color:#fb923c;font-size:11px;")
-
         self._lt_poll_timer = QTimer(self)
         self._lt_poll_timer.timeout.connect(self._poll_lt_ready)
         self._lt_poll_timer.start(3000)
@@ -521,29 +482,23 @@ class SettingsTab(QWidget):
     def _poll_lt_ready(self):
         global _lt_process
         if _lt_process is not None and _lt_process.poll() is not None:
-            exit_code = _lt_process.poll()
             self._lt_poll_timer.stop()
             if self._log_reader:
                 self._log_reader.stop()
-            self._lt_log_append(f"[error] Process exited with code {exit_code}")
-            self._lt_log_append("[hint] Check log above for the exact error. Common causes:")
-            self._lt_log_append("  • pip install libretranslate  (reinstall)")
-            self._lt_log_append("  • Port 5000 already in use — change URL to http://localhost:5001")
-            self._lt_status_lbl.setText("✗ Crashed — see log")
-            self._lt_status_lbl.setStyleSheet("color:#f87171;font-size:11px;font-weight:700;")
+            self._lt_log_append(f"[error] Process exited {_lt_process.poll()}")
+            self._lt_status_lbl.setText("✗ Crashed")
+            self._lt_status_lbl.setStyleSheet("color:#f87171;font-size:11px;")
             self._lt_start_btn.setEnabled(True)
             self._lt_stop_btn.setEnabled(False)
             return
-
         import translator as TR
         if TR.libretranslate_available():
             self._lt_poll_timer.stop()
-            self._lt_log_append("[ready] Server is up and responding ✓")
+            self._lt_log_append("[ready] Server up ✓")
             self._lt_status_lbl.setText("● Running")
             self._lt_status_lbl.setStyleSheet("color:#4ade80;font-size:11px;font-weight:700;")
         else:
-            cur = self._lt_status_lbl.text()
-            dots = cur.count(".")
+            dots = self._lt_status_lbl.text().count(".")
             self._lt_status_lbl.setText("⏳ Starting" + "." * ((dots % 3) + 1))
 
     def _stop_libretranslate(self):
@@ -559,7 +514,7 @@ class SettingsTab(QWidget):
                 pass
         if hasattr(self, "_lt_poll_timer"):
             self._lt_poll_timer.stop()
-        self._lt_log_append("[stopped] LibreTranslate stopped.")
+        self._lt_log_append("[stopped]")
         self._lt_start_btn.setEnabled(True)
         self._lt_stop_btn.setEnabled(False)
         self._lt_status_lbl.setText("Not running")
@@ -574,7 +529,7 @@ class SettingsTab(QWidget):
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setStyleSheet(
-            f"color:{ d['muted'] if muted else d['text']};font-size:12px;background:transparent;"
+            f"color:{d['muted'] if muted else d['text']};font-size:12px;background:transparent;"
         )
         return lbl
 
@@ -604,26 +559,22 @@ class SettingsTab(QWidget):
             with open("config.py", "r", encoding="utf-8") as f:
                 lines = f.readlines()
             new_lines = []
-            written_keys = set()
+            written = set()
             for line in lines:
                 matched = False
                 for key, val in updates.items():
                     if line.strip().startswith(key + " ") or line.strip().startswith(key + "="):
-                        if isinstance(val, str):
-                            new_lines.append(f'{key} = "{val}"\n')
-                        else:
-                            new_lines.append(f'{key} = {val}\n')
-                        written_keys.add(key)
+                        new_lines.append(f'{key} = "{val}"\n' if isinstance(val, str)
+                                         else f'{key} = {val}\n')
+                        written.add(key)
                         matched = True
                         break
                 if not matched:
                     new_lines.append(line)
             for key, val in updates.items():
-                if key not in written_keys:
-                    if isinstance(val, str):
-                        new_lines.append(f'\n{key} = "{val}"\n')
-                    else:
-                        new_lines.append(f'\n{key} = {val}\n')
+                if key not in written:
+                    new_lines.append(f'\n{key} = "{val}"\n' if isinstance(val, str)
+                                     else f'\n{key} = {val}\n')
             with open("config.py", "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
             return True
@@ -636,10 +587,9 @@ class SettingsTab(QWidget):
         self.theme_changed.emit()
 
     def _apply_font(self):
-        size = self.font_slider.value()
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
-        QApplication.instance().setFont(QFont("Segoe UI", size))
+        QApplication.instance().setFont(QFont("Segoe UI", self.font_slider.value()))
 
     def _apply_layout(self):
         self.layout_changed.emit(self.layout_combo.currentText())
@@ -651,10 +601,8 @@ class SettingsTab(QWidget):
             "DEFAULT_MODEL": self.default_model_combo.currentText().strip(),
         })
         if ok:
-            QMessageBox.information(
-                self, "Saved",
-                "API settings saved to config.py.\nRestart the app to apply."
-            )
+            QMessageBox.information(self, "Saved",
+                "API settings saved.\nRestart the app to apply.")
 
     def _save_trans(self):
         idx = self.backend_combo.currentIndex()
@@ -664,20 +612,13 @@ class SettingsTab(QWidget):
             code = TR.name_to_code(self.trans_lang_combo.currentText())
         except Exception:
             code = "en"
-        updates = {
-            "TRANSLATE_BACKEND":     backend_val,
-            "TRANSLATE_TARGET_LANG": code,
-        }
+        updates = {"TRANSLATE_BACKEND": backend_val, "TRANSLATE_TARGET_LANG": code}
         if idx == 0:
             updates["LIBRETRANSLATE_URL"]   = self.lt_url.text().strip() or "http://localhost:5000"
             updates["LIBRETRANSLATE_LANGS"] = self.lt_langs.text().strip() or "de,en,ru,es,fr,tr,pl,it"
         ok = self._write_config(updates)
         if ok:
-            QMessageBox.information(
-                self, "Saved",
-                "Translation settings saved to config.py.\n"
-                "Changes apply next time you open a Translate panel."
-            )
+            QMessageBox.information(self, "Saved", "Translation settings saved.")
 
     def _save_gh(self):
         ok = self._write_config({"GITHUB_TOKEN": self.gh_token.text().strip()})
@@ -687,7 +628,8 @@ class SettingsTab(QWidget):
     def _save_ws(self):
         ok = self._write_config({"WEB_SEARCH_RESULTS": self.ws_spin.value()})
         if ok:
-            QMessageBox.information(self, "Saved", f"Web search set to {self.ws_spin.value()} results.")
+            QMessageBox.information(self, "Saved",
+                f"Web search set to {self.ws_spin.value()} results.")
 
     def _clear_history(self):
         if QMessageBox.question(

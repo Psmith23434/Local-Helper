@@ -5,132 +5,158 @@ from ui.theme import get as T
 
 def global_qss() -> str:
     d = T()
+    bg      = d["bg"]        # #0d0d0d  — the one true dark
+    surf    = d["surface"]   # #141414
+    surf2   = d["surface2"]  # #1a1a1a
+    surf3   = d["surface3"]  # #1f1f1f
+    border  = d["border"]    # #2a2a2a
+    text    = d["text"]
+    muted   = d["muted"]
+    accent  = d["accent"]
+    acc_dim = d["accent_dim"]
+    faint   = d["faint"]
+    scroll  = d["scrollbar"]
+
     return f"""
-* {{ font-family: 'Segoe UI', 'Inter', sans-serif; font-size: 13px; color: {d['text']}; }}
-QMainWindow, QWidget {{ background: {d['bg']}; }}
-QDialog {{ background: {d['surface']}; }}
+* {{ font-family: 'Segoe UI', 'Inter', sans-serif; font-size: 13px; color: {text}; }}
+QMainWindow, QWidget {{ background: {bg}; }}
+QDialog {{ background: {surf}; }}
 
-/* ── Menu bar ─────────────────────────────── */
+/* ── Menu bar (native, hidden — only used as fallback) ─── */
 QMenuBar {{
-    background: {d['surface']};
-    border-bottom: 1px solid {d['border']};
-    padding: 2px 4px;
-    color: {d['text']};
+    background: {surf2};
+    border: none;
+    padding: 0;
+    color: {muted};
+    font-size: 12px;
 }}
-QMenuBar::item {{ padding: 4px 10px; border-radius: 4px; }}
-QMenuBar::item:selected {{ background: {d['accent_dim']}; color: #fff; }}
+QMenuBar::item {{ padding: 0 10px; height: 42px; background: transparent; }}
+QMenuBar::item:selected {{ background: {surf3}; color: {text}; }}
+QMenuBar::item:pressed  {{ background: {surf3}; color: {accent}; }}
 QMenu {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
-    border-radius: 6px;
-    padding: 4px;
-    color: {d['text']};
+    background: {surf};
+    border: 1px solid {border};
+    border-radius: 0;
+    padding: 4px 0;
+    color: {text};
 }}
-QMenu::item {{ padding: 6px 20px; border-radius: 4px; }}
-QMenu::item:selected {{ background: {d['accent']}; color: #fff; }}
-QMenu::separator {{ height: 1px; background: {d['border']}; margin: 4px 8px; }}
+QMenu::item {{ padding: 5px 20px; }}
+QMenu::item:selected {{ background: {surf3}; color: {accent}; }}
+QMenu::separator {{ height: 1px; background: {border}; margin: 3px 10px; }}
 
-/* ── Tab bar ──────────────────────────────── */
+/* ── Tab widget ───────────────────────────── */
+QTabWidget {{
+    background: {bg};
+    border: none;
+}}
 QTabWidget::pane {{
     border: none;
-    background: {d['bg']};
+    background: {bg};
+    /* kill the default 1px frame Qt draws around the pane */
+    top: 0px;
 }}
+/* The bar strip itself — must match header surface2 exactly */
 QTabBar {{
-    background: {d['surface']};
+    background: {surf2};
+    border: none;
+    qproperty-drawBase: 0;
 }}
 QTabBar::tab {{
-    background: {d['tab_inactive']};
-    color: {d['muted']};
+    background: {surf2};
+    color: {muted};
     padding: 9px 22px;
     border: none;
     border-bottom: 2px solid transparent;
+    border-right: 1px solid {border};
     font-size: 13px;
     font-weight: 500;
     min-width: 100px;
 }}
 QTabBar::tab:selected {{
-    background: {d['tab_active']};
-    color: {d['text']};
-    border-bottom: 2px solid {d['accent']};
+    background: {surf2};
+    color: {text};
+    border-bottom: 2px solid {accent};
     font-weight: 700;
 }}
 QTabBar::tab:hover:!selected {{
-    background: {d['surface2']};
-    color: {d['text']};
+    background: {surf3};
+    color: {text};
 }}
+/* Fill the empty space to the right of the last tab */
+QTabBar::scroller {{ width: 0; }}
 
 /* ── Scrollbars ───────────────────────────── */
-QScrollBar:vertical {{ background: {d['surface']}; width: 6px; border-radius: 3px; }}
-QScrollBar::handle:vertical {{ background: {d['scrollbar']}; border-radius: 3px; min-height: 24px; }}
-QScrollBar::handle:vertical:hover {{ background: {d['muted']}; }}
+QScrollBar:vertical {{ background: {surf}; width: 6px; border-radius: 3px; }}
+QScrollBar::handle:vertical {{ background: {scroll}; border-radius: 3px; min-height: 24px; }}
+QScrollBar::handle:vertical:hover {{ background: {muted}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{ background: {d['surface']}; height: 6px; border-radius: 3px; }}
-QScrollBar::handle:horizontal {{ background: {d['scrollbar']}; border-radius: 3px; }}
+QScrollBar:horizontal {{ background: {surf}; height: 6px; border-radius: 3px; }}
+QScrollBar::handle:horizontal {{ background: {scroll}; border-radius: 3px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 /* ── Common widgets ───────────────────────── */
-QSplitter::handle {{ background: {d['border']}; width: 1px; }}
+QSplitter::handle {{ background: {border}; width: 1px; }}
 QStatusBar {{
-    background: {d['surface']};
-    color: {d['muted']};
-    border-top: 1px solid {d['border']};
+    background: {surf};
+    color: {muted};
+    border-top: 1px solid {border};
     font-size: 11px;
     padding: 2px 8px;
 }}
 QToolTip {{
-    background: {d['surface2']};
-    color: {d['text']};
-    border: 1px solid {d['border']};
+    background: {surf2};
+    color: {text};
+    border: 1px solid {border};
     border-radius: 4px;
     padding: 4px 8px;
     font-size: 12px;
 }}
 QComboBox {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
+    background: {surf2};
+    border: 1px solid {border};
     border-radius: 6px;
     padding: 5px 8px;
-    color: {d['text']};
+    color: {text};
     font-size: 12px;
     min-width: 140px;
 }}
 QComboBox::drop-down {{ border: none; width: 18px; }}
 QComboBox QAbstractItemView {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
-    selection-background-color: {d['accent']};
-    color: {d['text']};
+    background: {surf2};
+    border: 1px solid {border};
+    selection-background-color: {accent};
+    color: {text};
 }}
-QCheckBox {{ color: {d['muted']}; font-size: 12px; spacing: 5px; }}
-QCheckBox:hover {{ color: {d['text']}; }}
+QCheckBox {{ color: {muted}; font-size: 12px; spacing: 5px; }}
+QCheckBox:hover {{ color: {text}; }}
 QCheckBox::indicator {{
     width: 14px; height: 14px;
-    border: 1px solid {d['border']};
+    border: 1px solid {border};
     border-radius: 3px;
-    background: {d['surface2']};
+    background: {surf2};
 }}
-QCheckBox::indicator:checked {{ background: {d['accent']}; border-color: {d['accent']}; }}
+QCheckBox::indicator:checked {{ background: {accent}; border-color: {accent}; }}
 QLineEdit, QTextEdit {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
+    background: {surf2};
+    border: 1px solid {border};
     border-radius: 6px;
-    color: {d['text']};
+    color: {text};
     padding: 5px 8px;
-    selection-background-color: {d['accent']};
+    selection-background-color: {accent};
 }}
-QLineEdit:focus, QTextEdit:focus {{ border-color: {d['accent']}; }}
+QLineEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
 QLabel {{ background: transparent; }}
 QPushButton {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
+    background: {surf2};
+    border: 1px solid {border};
     border-radius: 6px;
-    color: {d['text']};
+    color: {text};
     padding: 5px 14px;
     font-size: 12px;
 }}
-QPushButton:hover {{ background: {d['surface3']}; border-color: {d['muted']}; }}
-QPushButton:pressed {{ background: {d['faint']}; }}
-QPushButton:disabled {{ color: {d['muted']}; background: {d['surface']}; }}
+QPushButton:hover {{ background: {surf3}; border-color: {muted}; }}
+QPushButton:pressed {{ background: {faint}; }}
+QPushButton:disabled {{ color: {muted}; background: {surf}; }}
 QListWidget {{
     background: transparent;
     border: none;
@@ -138,41 +164,41 @@ QListWidget {{
 }}
 QListWidget::item {{
     background: transparent;
-    color: {d['text']};
+    color: {text};
     padding: 7px 10px;
     border-radius: 6px;
     margin: 1px 2px;
     font-size: 12px;
 }}
-QListWidget::item:hover {{ background: {d['surface2']}; }}
-QListWidget::item:selected {{ background: {d['accent_dim']}; color: #fff; }}
+QListWidget::item:hover {{ background: {surf2}; }}
+QListWidget::item:selected {{ background: {acc_dim}; color: #fff; }}
 QGroupBox {{
-    border: 1px solid {d['border']};
+    border: 1px solid {border};
     border-radius: 8px;
     margin-top: 10px;
     padding-top: 10px;
-    color: {d['muted']};
+    color: {muted};
     font-size: 11px;
     font-weight: 700;
 }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
 QSlider::groove:horizontal {{
     height: 4px;
-    background: {d['border']};
+    background: {border};
     border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
-    background: {d['accent']};
+    background: {accent};
     width: 14px; height: 14px;
     margin: -5px 0;
     border-radius: 7px;
 }}
-QSlider::sub-page:horizontal {{ background: {d['accent']}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}
 QSpinBox {{
-    background: {d['surface2']};
-    border: 1px solid {d['border']};
+    background: {surf2};
+    border: 1px solid {border};
     border-radius: 6px;
-    color: {d['text']};
+    color: {text};
     padding: 4px 8px;
 }}
 """
