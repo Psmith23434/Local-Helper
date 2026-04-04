@@ -19,7 +19,7 @@ from ui.styles import accent_btn_qss
 _lt_process = None
 
 
-# ── Log reader thread ─────────────────────────────────────────────────────────
+# ── Log reader thread ──────────────────────────────────────────────────────────────
 class _LogReader(QThread):
     """Reads stdout+stderr of a subprocess and emits lines as signals."""
     line_ready = pyqtSignal(str)
@@ -40,13 +40,49 @@ class _LogReader(QThread):
         self._running = False
 
 
+# ── Model fetch thread ─────────────────────────────────────────────────────────────
+class _ModelFetcher(QThread):
+    """Fetches available model IDs from the proxy /models endpoint in a background thread."""
+    models_ready = pyqtSignal(list)   # emits list[str] of model IDs
+    error        = pyqtSignal(str)
+
+    def run(self):
+        try:
+            import requests
+            import config
+            base = getattr(config, "BASE_URL", "").rstrip("/")
+            api_key = getattr(config, "API_KEY", "")
+            if not base:
+                self.error.emit("BASE_URL not set in config.py")
+                return
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            resp = requests.get(f"{base}/models", headers=headers, timeout=8)
+            resp.raise_for_status()
+            data = resp.json()
+            # OpenAI-compatible: {"data": [{"id": "..."}]}
+            # or flat list: ["model-a", "model-b"]
+            if isinstance(data, dict) and "data" in data:
+                ids = [m["id"] for m in data["data"] if isinstance(m, dict) and "id" in m]
+            elif isinstance(data, list):
+                ids = [m if isinstance(m, str) else m.get("id", "") for m in data]
+            else:
+                ids = []
+            ids = sorted(filter(None, ids))
+            self.models_ready.emit(ids)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class SettingsTab(QWidget):
     theme_changed  = pyqtSignal()
     layout_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._log_reader = None
+        self._log_reader   = None
+        self._model_fetcher = None
         self._build_ui()
 
     def _build_ui(self):
@@ -70,7 +106,7 @@ class SettingsTab(QWidget):
         h.setStyleSheet(f"color:{d['text']};")
         cl.addWidget(h)
 
-        # ── Appearance ───────────────────────────────────────────────────────────
+        # ── Appearance ───────────────────────────────────────────────────────────────
         grp_appear = self._group("Appearance")
         gl = QVBoxLayout(grp_appear)
         gl.setSpacing(10)
@@ -130,23 +166,55 @@ class SettingsTab(QWidget):
         gl.addLayout(row3)
         cl.addWidget(grp_appear)
 
-        # ── API / Proxy ──────────────────────────────────────────────────────────
+        # ── API / Proxy ──────────────────────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
+
         al.addWidget(self._lbl("Base URL"))
         self.api_url = QLineEdit()
         self._load_config_value("BASE_URL", self.api_url)
         al.addWidget(self.api_url)
+
         al.addWidget(self._lbl("API Key"))
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self._load_config_value("API_KEY", self.api_key)
         al.addWidget(self.api_key)
-        al.addWidget(self._lbl("Default Model"))
-        self.default_model = QLineEdit()
-        self._load_config_value("DEFAULT_MODEL", self.default_model)
-        al.addWidget(self.default_model)
+
+        # — Default model: dropdown populated from /models + manual fallback —
+        al.addWidget(self._lbl(
+            "Default Model  —  select from list or type manually. "
+            "Click \"Fetch models\" to load available models from your proxy."
+        ))
+        model_row = QHBoxLayout()
+        self.default_model_combo = QComboBox()
+        self.default_model_combo.setEditable(True)          # allow typing custom names
+        self.default_model_combo.setInsertPolicy(QComboBox.InsertAtTop)
+        self.default_model_combo.setMinimumWidth(280)
+        self.default_model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        # Pre-populate with the currently saved model
+        try:
+            import config
+            saved = getattr(config, "DEFAULT_MODEL", "")
+            if saved:
+                self.default_model_combo.addItem(saved)
+                self.default_model_combo.setCurrentText(saved)
+        except Exception:
+            pass
+        model_row.addWidget(self.default_model_combo, stretch=1)
+
+        self._fetch_models_btn = QPushButton("🔄  Fetch models")
+        self._fetch_models_btn.setFixedHeight(28)
+        self._fetch_models_btn.setToolTip("Query BASE_URL/models and populate the dropdown")
+        self._fetch_models_btn.clicked.connect(self._fetch_models)
+        model_row.addWidget(self._fetch_models_btn)
+        al.addLayout(model_row)
+
+        self._model_status_lbl = QLabel("")
+        self._model_status_lbl.setStyleSheet(f"color:{d['muted']};font-size:11px;")
+        al.addWidget(self._model_status_lbl)
+
         btn_save_api = QPushButton("Save to config.py")
         btn_save_api.setStyleSheet(accent_btn_qss())
         btn_save_api.setFixedWidth(160)
@@ -154,12 +222,11 @@ class SettingsTab(QWidget):
         al.addWidget(btn_save_api)
         cl.addWidget(grp_api)
 
-        # ── Translation ──────────────────────────────────────────────────────────
+        # ── Translation ──────────────────────────────────────────────────────────────
         grp_trans = self._group("Translation")
         tl = QVBoxLayout(grp_trans)
         tl.setSpacing(12)
 
-        # — Backend selector —
         tl.addWidget(self._lbl(
             "Translation backend  —  LibreTranslate = self-hosted (private, no internet needed);  "
             "Google = always-on online fallback via deep-translator (no key, no account)"
@@ -175,7 +242,7 @@ class SettingsTab(QWidget):
         backend_row.addStretch()
         tl.addLayout(backend_row)
 
-        # — LibreTranslate sub-section (hidden when Google is selected) —
+        # — LibreTranslate sub-section —
         self._lt_section = QWidget()
         lt_lay = QVBoxLayout(self._lt_section)
         lt_lay.setContentsMargins(0, 0, 0, 0)
@@ -190,7 +257,6 @@ class SettingsTab(QWidget):
         self._load_config_value("LIBRETRANSLATE_URL", self.lt_url)
         lt_lay.addWidget(self.lt_url)
 
-        # — Languages to load —
         lt_lay.addWidget(self._lbl(
             "Languages to download/load  —  comma-separated codes.  "
             "Only these pairs will be available; keeps download small (~200–400 MB instead of ~7 GB).  "
@@ -203,7 +269,6 @@ class SettingsTab(QWidget):
             self.lt_langs.setText("de,en,ru,es,fr,tr,pl,it")
         lt_lay.addWidget(self.lt_langs)
 
-        # — Start / Stop buttons —
         lt_lay.addWidget(self._lbl(
             "Click ▶ Start to run LibreTranslate locally (no Docker needed).  "
             "First launch downloads the chosen language models — watch the log below.  "
@@ -241,7 +306,6 @@ class SettingsTab(QWidget):
         lt_btn_row.addStretch()
         lt_lay.addLayout(lt_btn_row)
 
-        # — Live log box —
         lt_lay.addWidget(self._lbl("Live log (shows download progress and errors):"))
         self._lt_log = QPlainTextEdit()
         self._lt_log.setReadOnly(True)
@@ -253,7 +317,6 @@ class SettingsTab(QWidget):
         )
         self._lt_log.setPlaceholderText("Log output will appear here when LibreTranslate is running…")
         lt_lay.addWidget(self._lt_log)
-
         tl.addWidget(self._lt_section)
 
         # — Default target language —
@@ -280,10 +343,9 @@ class SettingsTab(QWidget):
         tl.addWidget(btn_save_trans)
         cl.addWidget(grp_trans)
 
-        # Apply initial visibility
         self._on_backend_changed(self.backend_combo.currentIndex())
 
-        # ── GitHub ────────────────────────────────────────────────────────────
+        # ── GitHub ────────────────────────────────────────────────────────────────────
         grp_gh = self._group("GitHub")
         ghl = QVBoxLayout(grp_gh)
         ghl.setSpacing(10)
@@ -299,7 +361,7 @@ class SettingsTab(QWidget):
         ghl.addWidget(btn_save_gh)
         cl.addWidget(grp_gh)
 
-        # ── Web Search ───────────────────────────────────────────────────────
+        # ── Web Search ──────────────────────────────────────────────────────────────────
         grp_ws = self._group("Web Search")
         wl = QVBoxLayout(grp_ws)
         wl.setSpacing(10)
@@ -315,7 +377,7 @@ class SettingsTab(QWidget):
         wl.addWidget(btn_save_ws)
         cl.addWidget(grp_ws)
 
-        # ── Danger zone ───────────────────────────────────────────────────────
+        # ── Danger zone ──────────────────────────────────────────────────────────────────
         grp_danger = self._group("Danger Zone")
         grp_danger.setStyleSheet(
             f"QGroupBox{{border:1px solid {d['red']};border-radius:8px;"
@@ -340,20 +402,44 @@ class SettingsTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    # ── Backend visibility toggle ──────────────────────────────────────────────
+    # ── Model fetch ─────────────────────────────────────────────────────────────────
+    def _fetch_models(self):
+        self._fetch_models_btn.setEnabled(False)
+        self._model_status_lbl.setText("⏳ Fetching…")
+        self._model_fetcher = _ModelFetcher()
+        self._model_fetcher.models_ready.connect(self._on_models_ready)
+        self._model_fetcher.error.connect(self._on_models_error)
+        self._model_fetcher.start()
+
+    def _on_models_ready(self, models: list):
+        self._fetch_models_btn.setEnabled(True)
+        if not models:
+            self._model_status_lbl.setText("No models returned by the proxy.")
+            return
+        current = self.default_model_combo.currentText()
+        self.default_model_combo.clear()
+        self.default_model_combo.addItems(models)
+        # Restore previous selection if still present
+        idx = self.default_model_combo.findText(current)
+        if idx >= 0:
+            self.default_model_combo.setCurrentIndex(idx)
+        self._model_status_lbl.setText(f"✓ {len(models)} model(s) loaded")
+
+    def _on_models_error(self, msg: str):
+        self._fetch_models_btn.setEnabled(True)
+        self._model_status_lbl.setText(f"✗ {msg}")
+
+    # ── Backend visibility toggle ─────────────────────────────────────────────────────
     def _on_backend_changed(self, idx: int):
         self._lt_section.setVisible(idx == 0)
 
-    # ── LibreTranslate process management ──────────────────────────────────────
+    # ── LibreTranslate process management ──────────────────────────────────────────────
     def _find_libretranslate_exe(self) -> str | None:
-        """Return the path to the libretranslate executable, or None if not found."""
-        # 1) Same Scripts/ folder as the running Python
         scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
         for name in ("libretranslate", "libretranslate.exe"):
             candidate = os.path.join(scripts, name)
             if os.path.isfile(candidate):
                 return candidate
-        # 2) PATH lookup
         found = shutil.which("libretranslate")
         if found:
             return found
@@ -399,12 +485,9 @@ class SettingsTab(QWidget):
         self._lt_log_append(f"[info] Loading languages: {langs}")
         self._lt_log_append("[info] First run downloads models — this can take several minutes…")
 
-        # Inherit current environment and force UTF-8 so Windows cp1252 can't
-        # choke on arrow characters (→) printed by LibreTranslate during model
-        # download — that encoding error was causing the IndexError crash.
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"  # Python 3.7+ UTF-8 mode, covers all I/O streams
+        env["PYTHONUTF8"] = "1"
 
         try:
             _lt_process = subprocess.Popen(
@@ -417,7 +500,6 @@ class SettingsTab(QWidget):
             self._lt_log_append(f"[error] Failed to start: {e}")
             return
 
-        # Start log reader thread
         self._log_reader = _LogReader(_lt_process)
         self._log_reader.line_ready.connect(self._lt_log_append)
         self._log_reader.start()
@@ -427,7 +509,6 @@ class SettingsTab(QWidget):
         self._lt_status_lbl.setText("⏳ Starting…")
         self._lt_status_lbl.setStyleSheet("color:#fb923c;font-size:11px;")
 
-        # Poll for ready + crash detection
         self._lt_poll_timer = QTimer(self)
         self._lt_poll_timer.timeout.connect(self._poll_lt_ready)
         self._lt_poll_timer.start(3000)
@@ -439,7 +520,6 @@ class SettingsTab(QWidget):
 
     def _poll_lt_ready(self):
         global _lt_process
-        # Crash detection
         if _lt_process is not None and _lt_process.poll() is not None:
             exit_code = _lt_process.poll()
             self._lt_poll_timer.stop()
@@ -485,16 +565,18 @@ class SettingsTab(QWidget):
         self._lt_status_lbl.setText("Not running")
         self._lt_status_lbl.setStyleSheet("color:#666;font-size:11px;")
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────────────────
     def _group(self, title: str) -> QGroupBox:
         return QGroupBox(title)
 
     def _lbl(self, text: str, muted: bool = True) -> QLabel:
         d = T()
-        l = QLabel(text)
-        l.setWordWrap(True)
-        l.setStyleSheet(f"color:{ d['muted'] if muted else d['text']};font-size:12px;background:transparent;")
-        return l
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            f"color:{ d['muted'] if muted else d['text']};font-size:12px;background:transparent;"
+        )
+        return lbl
 
     def _load_config_value(self, key: str, widget: QLineEdit):
         try:
@@ -566,10 +648,13 @@ class SettingsTab(QWidget):
         ok = self._write_config({
             "BASE_URL":      self.api_url.text().strip(),
             "API_KEY":       self.api_key.text().strip(),
-            "DEFAULT_MODEL": self.default_model.text().strip(),
+            "DEFAULT_MODEL": self.default_model_combo.currentText().strip(),
         })
         if ok:
-            QMessageBox.information(self, "Saved", "API settings saved to config.py.\nRestart the app to apply.")
+            QMessageBox.information(
+                self, "Saved",
+                "API settings saved to config.py.\nRestart the app to apply."
+            )
 
     def _save_trans(self):
         idx = self.backend_combo.currentIndex()

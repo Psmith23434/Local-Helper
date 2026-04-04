@@ -85,61 +85,75 @@ class TitleBar(QWidget):
         self._display_font = _load_cinzel()
         self._build()
 
-    # ── QSS helper ──────────────────────────────────────────────────────────
+    # ── QSS helpers ──────────────────────────────────────────────────────────
     def _menu_qss(self, d: dict) -> str:
-        bg   = d["surface2"]
-        text = d["text"]
-        mut  = d["muted"]
-        acc  = d["accent"]
-        h    = self.HEIGHT
+        bg      = d["surface2"]
+        text    = d["text"]
+        muted   = d["muted"]
+        acc     = d["accent"]
+        surf3   = d.get("surface3", "#1f1f1f")
+        border  = d["border"]
+        surf    = d["surface"]
+        h       = self.HEIGHT
         return (
-            f"QMenuBar{{"
-            f"  background:{bg};"
-            f"  color:{text};"
-            f"  border:none;"
-            f"  font-size:12px;"
-            f"  spacing:0px;"
-            f"}}"
-            f"QMenuBar::item{{"
-            f"  background:transparent;"
-            f"  color:{mut};"
-            f"  padding:0 10px;"
-            f"  height:{h}px;"
-            f"}}"
-            f"QMenuBar::item:selected{{"
-            f"  background:{d.get('surface3', '#1f1f1f')};"
-            f"  color:{text};"
-            f"}}"
-            f"QMenuBar::item:pressed{{"
-            f"  background:{d.get('surface3', '#1f1f1f')};"
-            f"  color:{acc};"
-            f"}}"
-            f"QMenu{{"
-            f"  background:{d['surface']};"
-            f"  color:{text};"
-            f"  border:1px solid {d['border']};"
-            f"  padding:4px 0;"
-            f"}}"
-            f"QMenu::item{{"
-            f"  padding:5px 20px;"
-            f"}}"
-            f"QMenu::item:selected{{"
-            f"  background:{d.get('surface3','#1f1f1f')};"
-            f"  color:{acc};"
-            f"}}"
-            f"QMenu::separator{{"
-            f"  height:1px;"
-            f"  background:{d['border']};"
-            f"  margin:3px 10px;"
-            f"}}"
+            "QMenuBar {"
+            f" background: {bg};"
+            f" color: {muted};"
+            "  border: none;"
+            "  font-size: 12px;"
+            "  spacing: 0px;"
+            "}"
+            "QMenuBar::item {"
+            "  background: transparent;"
+            f" padding: 0 10px;"
+            f" height: {h}px;"
+            "}"
+            "QMenuBar::item:selected {"
+            f" background: {surf3};"
+            f" color: {text};"
+            "}"
+            "QMenuBar::item:pressed {"
+            f" background: {surf3};"
+            f" color: {acc};"
+            "}"
+            "QMenu {"
+            f" background: {surf};"
+            f" color: {text};"
+            f" border: 1px solid {border};"
+            "  padding: 4px 0;"
+            "}"
+            "QMenu::item { padding: 5px 20px; }"
+            "QMenu::item:selected {"
+            f" background: {surf3};"
+            f" color: {acc};"
+            "}"
+            "QMenu::separator {"
+            "  height: 1px;"
+            f" background: {border};"
+            "  margin: 3px 10px;"
+            "}"
+        )
+
+    @staticmethod
+    def _ctrl_btn_qss(fg: str, hover_bg: str) -> str:
+        """Return QSS for a window-control button (no f-string brace escaping issues)."""
+        return (
+            "QPushButton {"
+            f" background: transparent; color: {fg};"
+            "  border: none; font-size: 14px;"
+            "  min-width: 40px; padding: 0;"
+            "}"
+            "QPushButton:hover {"
+            f" background: {hover_bg};"
+            "}"
         )
 
     # ── Build ───────────────────────────────────────────────────────────────
     def _build(self):
         d = T()
         self.setStyleSheet(
-            f"background:{d['surface2']};"
-            "border-bottom:1px solid #111;"
+            f"background: {d['surface2']};"
+            " border-bottom: 1px solid #111;"
         )
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 4, 0)
@@ -149,11 +163,6 @@ class TitleBar(QWidget):
         self._mb = QMenuBar(self)
         self._mb.setStyleSheet(self._menu_qss(d))
         self._mb.setFixedHeight(self.HEIGHT)
-        self._mb.setSizePolicy(
-            self._mb.sizePolicy().horizontalPolicy(),
-            self._mb.sizePolicy().verticalPolicy()
-        )
-        # Menus are populated by TabbedLayout via populate_menus()
         lay.addWidget(self._mb)
 
         lay.addStretch()
@@ -166,33 +175,28 @@ class TitleBar(QWidget):
         self._title_lbl.setFont(title_font)
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setStyleSheet(
-            f"color:{d.get('accent', '#7c6af7')};background:transparent;"
+            f"color: {d.get('accent', '#7c6af7')}; background: transparent;"
         )
         lay.addWidget(self._title_lbl)
 
         lay.addStretch()
 
         # ── Window controls (right) ───────────────────────────────────
-        h = self.HEIGHT
-        btn_css = (
-            "QPushButton{{"
-            "background:transparent;color:{fg};"
-            "border:none;font-size:14px;"
-            f"min-width:40px;min-height:{h}px;padding:0;}}"
-            "QPushButton:hover{{background:{hover};}}"
-        )
         self._btn_min = QPushButton("⎯")
-        self._btn_min.setStyleSheet(btn_css.format(fg=d["muted"], hover="#2a2a2a"))
+        self._btn_min.setFixedHeight(self.HEIGHT)
+        self._btn_min.setStyleSheet(self._ctrl_btn_qss(d["muted"], "#2a2a2a"))
         self._btn_min.setToolTip("Minimize")
         self._btn_min.clicked.connect(self._win.showMinimized)
 
         self._btn_max = QPushButton("□")
-        self._btn_max.setStyleSheet(btn_css.format(fg=d["muted"], hover="#2a2a2a"))
+        self._btn_max.setFixedHeight(self.HEIGHT)
+        self._btn_max.setStyleSheet(self._ctrl_btn_qss(d["muted"], "#2a2a2a"))
         self._btn_max.setToolTip("Maximize / Restore")
         self._btn_max.clicked.connect(self._toggle_max)
 
         self._btn_close = QPushButton("✕")
-        self._btn_close.setStyleSheet(btn_css.format(fg="#f87171", hover="#c0392b"))
+        self._btn_close.setFixedHeight(self.HEIGHT)
+        self._btn_close.setStyleSheet(self._ctrl_btn_qss("#f87171", "#c0392b"))
         self._btn_close.setToolTip("Close")
         self._btn_close.clicked.connect(self._win.close)
 
@@ -200,9 +204,8 @@ class TitleBar(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
 
-    # ── Public: called by TabbedLayout / SidebarLayout after tab widget exists ──
+    # ── Public accessor ────────────────────────────────────────────────────
     def menu_bar(self) -> QMenuBar:
-        """Return the embedded QMenuBar so layouts can add their menus."""
         return self._mb
 
     # ── Maximize toggle ────────────────────────────────────────────────────
@@ -240,11 +243,11 @@ class TitleBar(QWidget):
     def update_theme(self):
         d = T()
         self.setStyleSheet(
-            f"background:{d['surface2']};"
-            "border-bottom:1px solid #111;"
+            f"background: {d['surface2']};"
+            " border-bottom: 1px solid #111;"
         )
         self._title_lbl.setStyleSheet(
-            f"color:{d.get('accent', '#7c6af7')};background:transparent;"
+            f"color: {d.get('accent', '#7c6af7')}; background: transparent;"
         )
         self._mb.setStyleSheet(self._menu_qss(d))
 
