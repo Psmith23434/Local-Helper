@@ -2,13 +2,14 @@
 
 import sys
 import subprocess
+import shutil
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QLineEdit, QSpinBox, QGroupBox, QMessageBox,
-    QSlider, QScrollArea, QFrame
+    QSlider, QScrollArea, QFrame, QPlainTextEdit
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
 import database as db
 from ui.theme import get as T, set_theme, names as theme_names, name as theme_name
@@ -18,12 +19,34 @@ from ui.styles import accent_btn_qss
 _lt_process = None
 
 
+# ── Log reader thread ─────────────────────────────────────────────────────────
+class _LogReader(QThread):
+    """Reads stdout+stderr of a subprocess and emits lines as signals."""
+    line_ready = pyqtSignal(str)
+
+    def __init__(self, proc):
+        super().__init__()
+        self._proc = proc
+        self._running = True
+
+    def run(self):
+        import io
+        for raw in io.TextIOWrapper(self._proc.stdout, encoding="utf-8", errors="replace"):
+            if not self._running:
+                break
+            self.line_ready.emit(raw.rstrip())
+
+    def stop(self):
+        self._running = False
+
+
 class SettingsTab(QWidget):
     theme_changed  = pyqtSignal()
     layout_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._log_reader = None
         self._build_ui()
 
     def _build_ui(self):
@@ -107,7 +130,7 @@ class SettingsTab(QWidget):
         gl.addLayout(row3)
         cl.addWidget(grp_appear)
 
-        # ── API / Proxy ─────────────────────────────────────────────────────
+        # ── API / Proxy ──────────────────────────────────────────────────────────
         grp_api = self._group("AI Proxy")
         al = QVBoxLayout(grp_api)
         al.setSpacing(10)
@@ -131,7 +154,7 @@ class SettingsTab(QWidget):
         al.addWidget(btn_save_api)
         cl.addWidget(grp_api)
 
-        # ── Translation ─────────────────────────────────────────────────────
+        # ── Translation ──────────────────────────────────────────────────────────
         grp_trans = self._group("Translation")
         tl = QVBoxLayout(grp_trans)
         tl.setSpacing(12)
@@ -145,7 +168,6 @@ class SettingsTab(QWidget):
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(["LibreTranslate (self-hosted)", "Google Translate (online)"])
         self.backend_combo.setFixedWidth(260)
-        # Load current setting
         current_backend = self._read_config_str("TRANSLATE_BACKEND", "libretranslate")
         self.backend_combo.setCurrentIndex(0 if current_backend == "libretranslate" else 1)
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
@@ -168,13 +190,27 @@ class SettingsTab(QWidget):
         self._load_config_value("LIBRETRANSLATE_URL", self.lt_url)
         lt_lay.addWidget(self.lt_url)
 
-        # Start / Stop LibreTranslate process
+        # — Languages to load —
         lt_lay.addWidget(self._lbl(
-            "Run LibreTranslate locally (Option B — no Docker needed).  "
-            "Click Start once; it runs silently in the background until you click Stop or close the app.  "
-            "First launch downloads language models (∼1–2 GB) — takes a few minutes."
+            "Languages to download/load  —  comma-separated codes.  "
+            "Only these pairs will be available; keeps download small (~200–400 MB instead of ~7 GB).  "
+            "Example: de,en,ru,es,fr,tr,pl,it"
+        ))
+        self.lt_langs = QLineEdit()
+        self.lt_langs.setPlaceholderText("de,en,ru,es,fr,tr,pl,it")
+        self._load_config_value("LIBRETRANSLATE_LANGS", self.lt_langs)
+        if not self.lt_langs.text().strip():
+            self.lt_langs.setText("de,en,ru,es,fr,tr,pl,it")
+        lt_lay.addWidget(self.lt_langs)
+
+        # — Start / Stop buttons —
+        lt_lay.addWidget(self._lbl(
+            "Click ▶ Start to run LibreTranslate locally (no Docker needed).  "
+            "First launch downloads the chosen language models — watch the log below.  "
+            "Runs in background until you click ■ Stop or close the app."
         ))
         lt_btn_row = QHBoxLayout()
+
         self._lt_start_btn = QPushButton("▶  Start LibreTranslate")
         self._lt_start_btn.setFixedHeight(32)
         self._lt_start_btn.setStyleSheet(
@@ -185,7 +221,7 @@ class SettingsTab(QWidget):
         )
         self._lt_start_btn.clicked.connect(self._start_libretranslate)
 
-        self._lt_stop_btn = QPushButton("■  Stop LibreTranslate")
+        self._lt_stop_btn = QPushButton("■  Stop")
         self._lt_stop_btn.setFixedHeight(32)
         self._lt_stop_btn.setEnabled(False)
         self._lt_stop_btn.setStyleSheet(
@@ -204,6 +240,19 @@ class SettingsTab(QWidget):
         lt_btn_row.addWidget(self._lt_status_lbl)
         lt_btn_row.addStretch()
         lt_lay.addLayout(lt_btn_row)
+
+        # — Live log box —
+        lt_lay.addWidget(self._lbl("Live log (shows download progress and errors):"))
+        self._lt_log = QPlainTextEdit()
+        self._lt_log.setReadOnly(True)
+        self._lt_log.setFixedHeight(120)
+        self._lt_log.setStyleSheet(
+            "QPlainTextEdit{background:#0a0a0a;color:#a0a0a0;"
+            "border:1px solid #2a2a2a;border-radius:6px;"
+            "font-family:Consolas,monospace;font-size:11px;padding:4px;}"
+        )
+        self._lt_log.setPlaceholderText("Log output will appear here when LibreTranslate is running…")
+        lt_lay.addWidget(self._lt_log)
 
         tl.addWidget(self._lt_section)
 
@@ -291,68 +340,130 @@ class SettingsTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll)
 
-    # ── Backend visibility toggle ───────────────────────────────────────────
+    # ── Backend visibility toggle ──────────────────────────────────────────────
     def _on_backend_changed(self, idx: int):
-        # idx 0 = LibreTranslate, idx 1 = Google
         self._lt_section.setVisible(idx == 0)
 
-    # ── LibreTranslate process management ─────────────────────────────────
+    # ── LibreTranslate process management ──────────────────────────────────────
+    def _find_libretranslate_exe(self) -> str | None:
+        """Return the path to the libretranslate executable, or None if not found."""
+        # 1) Same Scripts/ folder as the running Python
+        scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
+        for name in ("libretranslate", "libretranslate.exe"):
+            candidate = os.path.join(scripts, name)
+            if os.path.isfile(candidate):
+                return candidate
+        # 2) PATH lookup
+        found = shutil.which("libretranslate")
+        if found:
+            return found
+        return None
+
     def _start_libretranslate(self):
         global _lt_process
         if _lt_process is not None and _lt_process.poll() is None:
+            self._lt_log_append("[info] Already running.")
             self._lt_status_lbl.setText("Already running")
             return
 
+        exe = self._find_libretranslate_exe()
+        if exe is None:
+            QMessageBox.warning(
+                self, "LibreTranslate not found",
+                "Could not locate the libretranslate executable.\n\n"
+                "Install it first:\n\n    pip install libretranslate\n\n"
+                "Then restart this app and try again."
+            )
+            return
+
         url = self.lt_url.text().strip() or "http://localhost:5000"
+        host, port = "127.0.0.1", "5000"
         try:
-            host, port = "127.0.0.1", "5000"
-            if ":" in url.split("//")[-1]:
-                parts = url.split("//")[-1].split(":")
-                host  = parts[0]
-                port  = parts[1].split("/")[0]
+            after_scheme = url.split("//")[-1]
+            if ":" in after_scheme:
+                parts = after_scheme.split(":")
+                host  = parts[0] or "127.0.0.1"
+                port  = parts[1].split("/")[0] or "5000"
+            else:
+                host = after_scheme.split("/")[0] or "127.0.0.1"
         except Exception:
-            host, port = "127.0.0.1", "5000"
+            pass
+
+        langs_raw = self.lt_langs.text().strip()
+        langs = ",".join(c.strip() for c in langs_raw.split(",") if c.strip()) \
+                if langs_raw else "de,en,ru,es,fr,tr,pl,it"
+
+        cmd = [exe, "--host", host, "--port", port, "--load-only", langs]
+        self._lt_log.clear()
+        self._lt_log_append(f"[start] {' '.join(cmd)}")
+        self._lt_log_append(f"[info] Loading languages: {langs}")
+        self._lt_log_append("[info] First run downloads models — this can take several minutes…")
 
         try:
-            # Launch libretranslate with no visible console window (Windows: CREATE_NO_WINDOW)
-            kwargs = {}
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             _lt_process = subprocess.Popen(
-                [sys.executable, "-m", "libretranslate", "--host", host, "--port", port],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **kwargs,
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                # No CREATE_NO_WINDOW — we need stdout pipe; window won't appear anyway
             )
-            self._lt_start_btn.setEnabled(False)
-            self._lt_stop_btn.setEnabled(True)
-            self._lt_status_lbl.setText("⏳ Starting… (first run may take a few minutes)")
-            self._lt_status_lbl.setStyleSheet("color:#fb923c;font-size:11px;")
-            # Poll every 3 s until the server responds
-            self._lt_poll_timer = QTimer(self)
-            self._lt_poll_timer.timeout.connect(self._poll_lt_ready)
-            self._lt_poll_timer.start(3000)
-        except FileNotFoundError:
-            QMessageBox.warning(
-                self, "LibreTranslate not installed",
-                "Could not find the libretranslate command.\n\n"
-                "Run this in your terminal first:\n\n    pip install libretranslate"
-            )
+        except Exception as e:
+            self._lt_log_append(f"[error] Failed to start: {e}")
+            return
+
+        # Start log reader thread
+        self._log_reader = _LogReader(_lt_process)
+        self._log_reader.line_ready.connect(self._lt_log_append)
+        self._log_reader.start()
+
+        self._lt_start_btn.setEnabled(False)
+        self._lt_stop_btn.setEnabled(True)
+        self._lt_status_lbl.setText("⏳ Starting…")
+        self._lt_status_lbl.setStyleSheet("color:#fb923c;font-size:11px;")
+
+        # Poll for ready + crash detection
+        self._lt_poll_timer = QTimer(self)
+        self._lt_poll_timer.timeout.connect(self._poll_lt_ready)
+        self._lt_poll_timer.start(3000)
+
+    def _lt_log_append(self, line: str):
+        self._lt_log.appendPlainText(line)
+        sb = self._lt_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _poll_lt_ready(self):
+        global _lt_process
+        # Crash detection
+        if _lt_process is not None and _lt_process.poll() is not None:
+            exit_code = _lt_process.poll()
+            self._lt_poll_timer.stop()
+            if self._log_reader:
+                self._log_reader.stop()
+            self._lt_log_append(f"[error] Process exited with code {exit_code}")
+            self._lt_log_append("[hint] Check log above for the exact error. Common causes:")
+            self._lt_log_append("  • pip install libretranslate  (reinstall)")
+            self._lt_log_append("  • Port 5000 already in use — change URL to http://localhost:5001")
+            self._lt_status_lbl.setText("✗ Crashed — see log")
+            self._lt_status_lbl.setStyleSheet("color:#f87171;font-size:11px;font-weight:700;")
+            self._lt_start_btn.setEnabled(True)
+            self._lt_stop_btn.setEnabled(False)
+            return
+
         import translator as TR
         if TR.libretranslate_available():
             self._lt_poll_timer.stop()
+            self._lt_log_append("[ready] Server is up and responding ✓")
             self._lt_status_lbl.setText("● Running")
             self._lt_status_lbl.setStyleSheet("color:#4ade80;font-size:11px;font-weight:700;")
         else:
-            # Still starting — keep polling, update dots animation
             cur = self._lt_status_lbl.text()
             dots = cur.count(".")
             self._lt_status_lbl.setText("⏳ Starting" + "." * ((dots % 3) + 1))
 
     def _stop_libretranslate(self):
         global _lt_process
+        if self._log_reader:
+            self._log_reader.stop()
+            self._log_reader = None
         if _lt_process is not None:
             try:
                 _lt_process.terminate()
@@ -361,6 +472,7 @@ class SettingsTab(QWidget):
                 pass
         if hasattr(self, "_lt_poll_timer"):
             self._lt_poll_timer.stop()
+        self._lt_log_append("[stopped] LibreTranslate stopped.")
         self._lt_start_btn.setEnabled(True)
         self._lt_stop_btn.setEnabled(False)
         self._lt_status_lbl.setText("Not running")
@@ -464,8 +576,9 @@ class SettingsTab(QWidget):
             "TRANSLATE_BACKEND":     backend_val,
             "TRANSLATE_TARGET_LANG": code,
         }
-        if idx == 0:  # only save LT URL when LT is the chosen backend
-            updates["LIBRETRANSLATE_URL"] = self.lt_url.text().strip() or "http://localhost:5000"
+        if idx == 0:
+            updates["LIBRETRANSLATE_URL"]   = self.lt_url.text().strip() or "http://localhost:5000"
+            updates["LIBRETRANSLATE_LANGS"] = self.lt_langs.text().strip() or "de,en,ru,es,fr,tr,pl,it"
         ok = self._write_config(updates)
         if ok:
             QMessageBox.information(
