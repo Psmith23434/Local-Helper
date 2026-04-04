@@ -5,9 +5,26 @@ The `text_ready` signal emits the extracted text so chat_panel can
 insert it directly into the input box.
 """
 
+# ── CRITICAL: pre-load torch c10.dll at module import time ───────────────────
+# This must happen before PyQt5 is first touched.  main.py already does this,
+# but we repeat it here so the widget is safe even if imported in isolation
+# (e.g. the standalone tester or unit tests).
+import platform as _plt
+if _plt.system() == "Windows":
+    import ctypes as _ct, os as _os
+    from importlib.util import find_spec as _fs
+    try:
+        _spec = _fs("torch")
+        if _spec and _spec.origin:
+            _dll = _os.path.join(_os.path.dirname(_spec.origin), "lib", "c10.dll")
+            if _os.path.exists(_dll):
+                _ct.CDLL(_os.path.normpath(_dll))
+    except Exception:
+        pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import os
 import io
-import platform
 
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -15,10 +32,10 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFileDialog, QApplication, QProgressBar,
     QFrame, QCheckBox, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize
 from PyQt5.QtGui  import QPixmap, QColor, QPainter, QPen
 
-# ── Colour tokens (match chat_panel dark theme) ────────────────────────────────
+# ── Colour tokens (match chat_panel dark theme) ───────────────────────────────
 D = {
     "bg":        "#0d0d0d",
     "surface":   "#141414",
@@ -115,7 +132,7 @@ QProgressBar {{
 QProgressBar::chunk {{ background: {D['accent']}; border-radius: 4px; }}
 """
 
-# ── Language definitions ────────────────────────────────────────────────────────
+# ── Language definitions ──────────────────────────────────────────────────────
 LANGS = [
     ("Auto",   ["en", "de"]),
     ("EN",     ["en"]),
@@ -132,7 +149,7 @@ LANGS = [
 ]
 
 
-# ── OCR worker ─────────────────────────────────────────────────────────────────
+# ── OCR worker ────────────────────────────────────────────────────────────────
 class OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
@@ -161,7 +178,7 @@ class OCRWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── HiDPI-safe QPixmap → PIL ───────────────────────────────────────────────────
+# ── HiDPI-safe QPixmap → PIL ─────────────────────────────────────────────────
 def _qpixmap_to_pil(pixmap):
     from PIL import Image
     qimg   = pixmap.toImage().convertToFormat(pixmap.toImage().Format_RGB888)
@@ -174,7 +191,7 @@ def _qpixmap_to_pil(pixmap):
     return Image.fromarray(arr, "RGB")
 
 
-# ── Screen-snip overlay ────────────────────────────────────────────────────────
+# ── Screen-snip overlay ──────────────────────────────────────────────────────
 class SnipOverlay(QWidget):
     snipped   = pyqtSignal(object)   # PIL Image
     cancelled = pyqtSignal()
@@ -244,7 +261,7 @@ class SnipOverlay(QWidget):
             self.snipped.emit(_qpixmap_to_pil(self._screenshot.copy(phys)))
 
 
-# ── Drop zone label ────────────────────────────────────────────────────────────
+# ── Drop zone label ──────────────────────────────────────────────────────────
 class _DropZone(QLabel):
     file_dropped = pyqtSignal(str)
     EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff"}
@@ -309,7 +326,7 @@ class _DropZone(QLabel):
     def reset(self): self._idle()
 
 
-# ── Language bar ───────────────────────────────────────────────────────────────
+# ── Language bar ─────────────────────────────────────────────────────────────
 class _LangBar(QWidget):
     def __init__(self):
         super().__init__()
@@ -364,17 +381,16 @@ class OCRWidget(QWidget):
         self._worker     = None
         self._overlay    = None
         self._build_ui()
-        # ── Defer GPU detection until after the event loop starts so torch
-        # is imported AFTER c10.dll has already been pre-loaded in main.py.
-        QTimer.singleShot(500, self._detect_gpu)
+        # c10.dll was pre-loaded at module import above — safe to call synchronously.
+        self._detect_gpu()
 
-    # ── GPU probe (deferred — never called at import/construction time) ──────
+    # ── GPU probe ────────────────────────────────────────────────────────────
     def _detect_gpu(self):
         try:
             import torch
             if torch.cuda.is_available():
                 name = torch.cuda.get_device_name(0)
-                self.gpu_check.setText(f"GPU: {name}")
+                self.gpu_check.setText(f"Use GPU  —  {name}")
                 self.gpu_check.setEnabled(True)
                 self.gpu_check.setChecked(True)
                 self.gpu_check.setStyleSheet(
@@ -384,17 +400,16 @@ class OCRWidget(QWidget):
                 self.gpu_check.setText("GPU not available (CUDA not found)")
                 self.gpu_check.setEnabled(False)
         except Exception:
-            # torch not installed or still having DLL issues — stay disabled
-            self.gpu_check.setText("GPU N/A")
+            self.gpu_check.setText("GPU N/A (torch not installed)")
             self.gpu_check.setEnabled(False)
 
-    # ── UI ─────────────────────────────────────────────────────────────────────
+    # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
 
-        # ── Header ──────────────────────────────────────────────────────────
+        # Header
         hdr = QHBoxLayout()
         title = QLabel("🔍  OCR — Extract Text from Images")
         title.setStyleSheet(f"color:{D['text']};font-size:14px;font-weight:700;")
@@ -410,7 +425,7 @@ class OCRWidget(QWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        # ── Drop card ────────────────────────────────────────────────────────
+        # Drop card
         drop_card = QFrame()
         drop_card.setObjectName("Card")
         dc = QVBoxLayout(drop_card)
@@ -438,19 +453,19 @@ class OCRWidget(QWidget):
         dc.addLayout(btns)
         root.addWidget(drop_card)
 
-        # ── Language + GPU row ───────────────────────────────────────────────
+        # Language + GPU row
         self.lang_bar = _LangBar()
         root.addWidget(self.lang_bar)
 
         gpu_row = QHBoxLayout()
-        self.gpu_check = QCheckBox("Use GPU (detecting…)")
+        self.gpu_check = QCheckBox("Use GPU  —  detecting…")
         self.gpu_check.setChecked(False)
         self.gpu_check.setEnabled(False)
         gpu_row.addWidget(self.gpu_check)
         gpu_row.addStretch()
         root.addLayout(gpu_row)
 
-        # ── Run button ───────────────────────────────────────────────────────
+        # Run button
         self._run_btn = QPushButton("⚡  Extract Text")
         self._run_btn.setObjectName("Primary")
         self._run_btn.setFixedHeight(38)
@@ -467,7 +482,7 @@ class OCRWidget(QWidget):
         self._status.setStyleSheet(f"color:{D['muted']};font-size:11px;")
         root.addWidget(self._status)
 
-        # ── Result card ──────────────────────────────────────────────────────
+        # Result card
         result_card = QFrame()
         result_card.setObjectName("Card")
         rc = QVBoxLayout(result_card)
@@ -504,7 +519,7 @@ class OCRWidget(QWidget):
         rc.addWidget(self._result_box)
         root.addWidget(result_card)
 
-    # ── File handling ──────────────────────────────────────────────────────────
+    # ── File handling ─────────────────────────────────────────────────────────
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image", "",
@@ -526,7 +541,7 @@ class OCRWidget(QWidget):
         self._result_box.clear()
         self._status.setText("No image loaded.")
 
-    # ── Snip ──────────────────────────────────────────────────────────────────
+    # ── Snip ─────────────────────────────────────────────────────────────────
     def _start_snip(self):
         top = self.window()
         top.hide()
@@ -586,7 +601,7 @@ class OCRWidget(QWidget):
         self._progress.hide()
         self._run_btn.setEnabled(True)
 
-    # ── Actions ───────────────────────────────────────────────────────────────
+    # ── Actions ─────────────────────────────────────────────────────────────
     def _copy(self):
         txt = self._result_box.toPlainText()
         if txt:
@@ -601,7 +616,7 @@ class OCRWidget(QWidget):
             self.text_ready.emit(txt)
             self._status.setText("✓ Text sent to Chat input.")
 
-    # ── Public API for chat_panel inline snip ─────────────────────────────────
+    # ── Public API for chat_panel inline snip ────────────────────────────────
     def start_snip_for_chat(self, callback):
         top = self.window()
         top.hide()
