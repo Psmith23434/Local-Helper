@@ -184,11 +184,28 @@ QPushButton#SnipBtn:hover {{
 """
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
+class _GPUAvailable:
+    """Tiny singleton — probes torch ONCE and caches the result."""
+    _checked = False
+    _result  = False
+
+    @classmethod
+    def get(cls) -> bool:
+        if not cls._checked:
+            try:
+                import torch
+                cls._result = torch.cuda.is_available()
+            except Exception:
+                cls._result = False
+            cls._checked = True
+        return cls._result
+
+
+# ───────────────────────────────────────────────────────────────────
 # Markdown → HTML converter (tables, bullets, bold, italic, code, emoji)
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 def markdown_to_html(text: str) -> str:
-    """Convert a subset of Markdown to HTML for QTextBrowser."""
     lines = text.split("\n")
     html_lines = []
     in_code = False
@@ -364,9 +381,9 @@ def extract_code_blocks(text: str) -> list:
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # OCR worker (inline — for image-attach in chat)
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 class _OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
@@ -393,9 +410,9 @@ class _OCRWorker(QThread):
             self.error.emit(str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # Worker thread
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 class WorkerSignals(QObject):
     chunk = pyqtSignal(str)
     done  = pyqtSignal(str)
@@ -425,9 +442,9 @@ class ChatWorker(QThread):
             self.signals.error.emit(str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # Chat Panel
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 class ChatPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -437,7 +454,6 @@ class ChatPanel(QWidget):
         self.space_data        = None
         self._stream_buffer    = ""
         self._streaming        = False
-        # pending OCR / snip image (PIL) to attach with next send
         self._pending_image    = None
         self.setStyleSheet(PANEL_QSS)
         self._build_ui()
@@ -447,7 +463,7 @@ class ChatPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Top bar ──────────────────────────────────────────────────
+        # ── Top bar
         top_bar = QWidget()
         top_bar.setObjectName("TopBar")
         top_bar.setFixedHeight(46)
@@ -473,7 +489,7 @@ class ChatPanel(QWidget):
 
         root.addWidget(top_bar)
 
-        # ── Chat display ─────────────────────────────────────────────
+        # ── Chat display
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(True)
         self.chat_display.setFont(QFont("Segoe UI", 10))
@@ -486,7 +502,7 @@ class ChatPanel(QWidget):
         )
         root.addWidget(self.chat_display)
 
-        # ── Code action bar ───────────────────────────────────────────
+        # ── Code action bar
         self.code_bar = QWidget()
         self.code_bar.setObjectName("CodeBar")
         self.code_bar.setStyleSheet(
@@ -522,7 +538,7 @@ class ChatPanel(QWidget):
         self.code_bar.hide()
         root.addWidget(self.code_bar)
 
-        # ── OCR toolbar (shown when a pending image is attached) ───────
+        # ── OCR toolbar (shown when a pending image is attached)
         self._ocr_bar = QWidget()
         self._ocr_bar.setStyleSheet(
             f"QWidget{{background:{D['surface']};border-top:1px solid {D['border']};}}"
@@ -542,23 +558,21 @@ class ChatPanel(QWidget):
         self._ocr_bar.hide()
         root.addWidget(self._ocr_bar)
 
-        # ── Input area ───────────────────────────────────────────────
+        # ── Input area
         input_area = QWidget()
         input_area.setObjectName("InputArea")
         input_layout = QVBoxLayout(input_area)
         input_layout.setContentsMargins(12, 8, 12, 8)
         input_layout.setSpacing(6)
 
-        # OCR/Snip toolbar row (above the text input)
+        # OCR/Snip toolbar row
         toolbar_row = QHBoxLayout()
         toolbar_row.setSpacing(6)
 
         self._ocr_file_btn = QPushButton("📷 OCR Image")
         self._ocr_file_btn.setObjectName("OcrBtn")
         self._ocr_file_btn.setFixedHeight(26)
-        self._ocr_file_btn.setToolTip(
-            "Browse an image → EasyOCR extracts the text → inserts into this chat"
-        )
+        self._ocr_file_btn.setToolTip("Browse an image → EasyOCR extracts text → inserts into chat")
         self._ocr_file_btn.setCursor(Qt.PointingHandCursor)
         self._ocr_file_btn.clicked.connect(self._ocr_browse_and_insert)
         toolbar_row.addWidget(self._ocr_file_btn)
@@ -566,9 +580,7 @@ class ChatPanel(QWidget):
         self._snip_btn = QPushButton("✂️ Snip")
         self._snip_btn.setObjectName("SnipBtn")
         self._snip_btn.setFixedHeight(26)
-        self._snip_btn.setToolTip(
-            "Draw a rectangle on screen → EasyOCR extracts text → inserts into this chat"
-        )
+        self._snip_btn.setToolTip("Draw a rectangle on screen → EasyOCR extracts text → inserts into chat")
         self._snip_btn.setCursor(Qt.PointingHandCursor)
         self._snip_btn.clicked.connect(self._snip_and_insert)
         toolbar_row.addWidget(self._snip_btn)
@@ -579,7 +591,7 @@ class ChatPanel(QWidget):
         toolbar_row.addStretch()
         input_layout.addLayout(toolbar_row)
 
-        # Input row (text box + send button)
+        # Input row
         input_row = QHBoxLayout()
         input_row.setSpacing(10)
         self.input_box = QTextEdit()
@@ -600,7 +612,6 @@ class ChatPanel(QWidget):
 
         root.addWidget(input_area)
 
-        # ── Status label ────────────────────────────────────────────
         self.status_label = QLabel("Select a space or click + New Chat to start.")
         self.status_label.setObjectName("StatusLabel")
         self.status_label.setContentsMargins(14, 0, 14, 4)
@@ -609,7 +620,7 @@ class ChatPanel(QWidget):
         self._last_code_blocks: list = []
         self._ocr_worker = None
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    # ── Helpers
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
         if obj is self.input_box and event.type() == QEvent.KeyPress:
@@ -648,7 +659,7 @@ class ChatPanel(QWidget):
         for msg in db.get_messages(thread_id):
             self._render_message(msg["role"], msg["content"])
 
-    # ── Rendering ────────────────────────────────────────────────────────────
+    # ── Rendering
     def _render_message(self, role: str, content: str):
         if role == "user":
             avatar = f'<span style="color:{D["user_color"]};font-weight:700;">You</span>'
@@ -667,27 +678,17 @@ class ChatPanel(QWidget):
         )
         self.chat_display.append(html)
 
-    # ── OCR / Snip integration ────────────────────────────────────────────────
-    def _get_ocr_widget(self):
-        """Lazily find the OCRWidget living in the OCR tab."""
-        try:
-            layout = self.window()._layout
-            return layout.tab_ocr.ocr_widget
-        except Exception:
-            return None
-
+    # ── OCR / Snip integration
     def _ocr_browse_and_insert(self):
-        """Browse file → run EasyOCR → paste extracted text into input box."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image for OCR", "",
             "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tiff)"
         )
-        if not path:
-            return
-        self._run_ocr_on(path)
+        if path:
+            self._run_ocr_on(path)
 
     def _snip_and_insert(self):
-        """Screen snip → run EasyOCR → paste extracted text into input box."""
+        """Screen snip using the shared SnipOverlay → OCR → paste into input."""
         from ui.ocr_widget import SnipOverlay, _qpixmap_to_pil
         top = self.window()
         top.hide()
@@ -696,6 +697,7 @@ class ChatPanel(QWidget):
         screenshot = screen.grabWindow(0)
         dpr = screen.devicePixelRatio()
         self._snip_overlay = SnipOverlay(screenshot, dpr)
+        self._ocr_status.setText("Snipping…")
 
         def _got(pil_img):
             top.show()
@@ -707,27 +709,24 @@ class ChatPanel(QWidget):
 
         self._snip_overlay.snipped.connect(_got)
         self._snip_overlay.cancelled.connect(_cancel)
-        self._ocr_status.setText("Snipping…")
 
     def _run_ocr_on(self, source):
-        """source: file path str OR PIL Image.  Runs OCR and inserts text."""
+        """source: file path str OR PIL Image.  Auto-uses GPU when available."""
         if self._ocr_worker and self._ocr_worker.isRunning():
             return
+        use_gpu = _GPUAvailable.get()
+        mode    = "GPU" if use_gpu else "CPU"
         self._ocr_file_btn.setEnabled(False)
         self._snip_btn.setEnabled(False)
-        self._ocr_status.setText("Running OCR…")
-        self._ocr_worker = _OCRWorker(source, ["en", "de"], use_gpu=False)
+        self._ocr_status.setText(f"Running OCR [{mode}]…")
+        self._ocr_worker = _OCRWorker(source, ["en", "de"], use_gpu=use_gpu)
         self._ocr_worker.finished.connect(self._on_ocr_done)
         self._ocr_worker.error.connect(self._on_ocr_error)
         self._ocr_worker.start()
 
     def _on_ocr_done(self, text: str):
         current = self.input_box.toPlainText().strip()
-        if current:
-            self.input_box.setPlainText(current + "\n\n" + text)
-        else:
-            self.input_box.setPlainText(text)
-        # move cursor to end
+        self.input_box.setPlainText((current + "\n\n" + text) if current else text)
         cursor = self.input_box.textCursor()
         cursor.movePosition(cursor.End)
         self.input_box.setTextCursor(cursor)
@@ -740,7 +739,7 @@ class ChatPanel(QWidget):
         self._ocr_file_btn.setEnabled(True)
         self._snip_btn.setEnabled(True)
 
-    # ── Pending image attachment (for vision models) ──────────────────────────
+    # ── Pending image attachment (for vision models)
     def _set_pending_image(self, pil_img):
         self._pending_image = pil_img
         w, h = pil_img.size
@@ -751,7 +750,7 @@ class ChatPanel(QWidget):
         self._pending_image = None
         self._ocr_bar.hide()
 
-    # ── Send ─────────────────────────────────────────────────────────────────
+    # ── Send
     def _send(self):
         if not self.current_thread_id:
             self._set_status("⚠ Select a Space and Thread first.", D["red"])
@@ -792,12 +791,9 @@ class ChatPanel(QWidget):
                     extra += f"\n\n--- GitHub Repo: {repo} ---\nFiles:\n" + "\n".join(gh_files[:50])
 
         system = ((system + "\n\n--- Context ---" + extra).strip() if extra else system) or "You are a helpful assistant."
+        history = db.get_messages(self.current_thread_id)
 
-        history  = db.get_messages(self.current_thread_id)
-
-        # Build message list — inject image if attached
         if self._pending_image is not None:
-            # Encode PIL image to base64 for vision-capable models
             buf = io.BytesIO()
             self._pending_image.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -814,7 +810,7 @@ class ChatPanel(QWidget):
             user_msg = {"role": "user", "content": user_text}
 
         messages = [{"role": "system", "content": system}]
-        for m in history[:-1]:  # exclude the message we just added
+        for m in history[:-1]:
             messages.append({"role": m["role"], "content": m["content"]})
         messages.append(user_msg)
 
@@ -826,7 +822,7 @@ class ChatPanel(QWidget):
             f'<div style="margin-bottom:6px;font-size:11px;color:{D["muted"]};">'  
             f'<span style="color:{D["ai_color"]};font-weight:700;">Assistant</span></div>'
             f'<div id="stream-content" style="color:{D["text"]};white-space:pre-wrap;">'
-            f'<span style="color:{D["muted"]}">●●●</span></div></div>'
+            f'<span style="color:{D["muted"]}">\u25cf\u25cf\u25cf</span></div></div>'
         )
         self._stream_buffer = ""
         self._streaming = True
@@ -887,7 +883,7 @@ class ChatPanel(QWidget):
         self.send_btn.setEnabled(True)
         self._set_status(f"Error: {error_msg}", D["red"])
 
-    # ── Code actions ─────────────────────────────────────────────────
+    # ── Code actions
     def _first_code(self) -> str:
         return self._last_code_blocks[0]["code"] if self._last_code_blocks else ""
 
@@ -939,13 +935,10 @@ class ChatPanel(QWidget):
         except Exception as e:
             self._set_status(f"Commit failed: {e}", D["red"])
 
-    # ── Public: receive text from OCR tab "Insert into Chat" button ───────────
+    # ── Public: receive text from OCR tab “Insert into Chat” button
     def insert_ocr_text(self, text: str):
         current = self.input_box.toPlainText().strip()
-        if current:
-            self.input_box.setPlainText(current + "\n\n" + text)
-        else:
-            self.input_box.setPlainText(text)
+        self.input_box.setPlainText((current + "\n\n" + text) if current else text)
         cursor = self.input_box.textCursor()
         cursor.movePosition(cursor.End)
         self.input_box.setTextCursor(cursor)

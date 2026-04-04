@@ -7,8 +7,7 @@ insert it directly into the input box.
 
 # ── CRITICAL: pre-load torch c10.dll at module import time ───────────────────
 # This must happen before PyQt5 is first touched.  main.py already does this,
-# but we repeat it here so the widget is safe even if imported in isolation
-# (e.g. the standalone tester or unit tests).
+# but we repeat it here so the widget is safe even if imported in isolation.
 import platform as _plt
 if _plt.system() == "Windows":
     import ctypes as _ct, os as _os
@@ -32,10 +31,10 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFileDialog, QApplication, QProgressBar,
     QFrame, QCheckBox, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize
-from PyQt5.QtGui  import QPixmap, QColor, QPainter, QPen
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint, QSize, QTimer
+from PyQt5.QtGui  import QPixmap, QColor, QPainter, QPen, QScreen
 
-# ── Colour tokens (match chat_panel dark theme) ───────────────────────────────
+# ── Colour tokens (match chat_panel dark theme) ─────────────────────────────
 D = {
     "bg":        "#0d0d0d",
     "surface":   "#141414",
@@ -132,7 +131,7 @@ QProgressBar {{
 QProgressBar::chunk {{ background: {D['accent']}; border-radius: 4px; }}
 """
 
-# ── Language definitions ──────────────────────────────────────────────────────
+# ── Language definitions ─────────────────────────────────────────────────────
 LANGS = [
     ("Auto",   ["en", "de"]),
     ("EN",     ["en"]),
@@ -149,13 +148,12 @@ LANGS = [
 ]
 
 
-# ── OCR worker ────────────────────────────────────────────────────────────────
+# ── OCR worker ───────────────────────────────────────────────────────────────
 class OCRWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
     def __init__(self, source, langs, use_gpu):
-        """source: file path (str) OR PIL Image."""
         super().__init__()
         self.source  = source
         self.langs   = langs
@@ -178,7 +176,7 @@ class OCRWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── HiDPI-safe QPixmap → PIL ─────────────────────────────────────────────────
+# ── HiDPI-safe QPixmap → PIL ────────────────────────────────────────────────
 def _qpixmap_to_pil(pixmap):
     from PIL import Image
     qimg   = pixmap.toImage().convertToFormat(pixmap.toImage().Format_RGB888)
@@ -191,25 +189,37 @@ def _qpixmap_to_pil(pixmap):
     return Image.fromarray(arr, "RGB")
 
 
-# ── Screen-snip overlay ──────────────────────────────────────────────────────
+# ── Screen-snip overlay ─────────────────────────────────────────────────────
 class SnipOverlay(QWidget):
     snipped   = pyqtSignal(object)   # PIL Image
     cancelled = pyqtSignal()
 
-    def __init__(self, screenshot, dpr):
+    def __init__(self, screenshot: QPixmap, dpr: float):
         super().__init__()
         self._screenshot = screenshot
         self._dpr        = dpr
         self._origin     = QPoint()
         self._rect       = QRect()
         self._drawing    = False
+
+        # ── Use show() + explicit geometry instead of showFullScreen().
+        # showFullScreen() on Windows causes a black-frame visual glitch
+        # because the WM repaints the taskbar area before our paintEvent fires.
+        # Covering the full virtual desktop geometry with a borderless tool
+        # window avoids that entirely.
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setCursor(Qt.CrossCursor)
-        self.setGeometry(QApplication.primaryScreen().geometry())
-        self.showFullScreen()
+
+        # Cover ALL screens (virtual desktop), not just the primary one
+        desktop = QApplication.desktop()
+        self.setGeometry(desktop.geometry())
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -220,6 +230,7 @@ class SnipOverlay(QWidget):
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
             p.setPen(QPen(QColor(124, 106, 247), 2))
             p.drawRect(self._rect.normalized())
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setPen(QColor(200, 200, 200))
         p.drawText(
             self.rect().adjusted(0, 20, 0, 0),
@@ -261,7 +272,7 @@ class SnipOverlay(QWidget):
             self.snipped.emit(_qpixmap_to_pil(self._screenshot.copy(phys)))
 
 
-# ── Drop zone label ──────────────────────────────────────────────────────────
+# ── Drop zone label ─────────────────────────────────────────────────────────
 class _DropZone(QLabel):
     file_dropped = pyqtSignal(str)
     EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff"}
@@ -326,7 +337,7 @@ class _DropZone(QLabel):
     def reset(self): self._idle()
 
 
-# ── Language bar ─────────────────────────────────────────────────────────────
+# ── Language bar ────────────────────────────────────────────────────────────
 class _LangBar(QWidget):
     def __init__(self):
         super().__init__()
@@ -365,9 +376,9 @@ class _LangBar(QWidget):
     def get(self): return self._selected
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # Main OCRWidget — embed as a tab or instantiate directly
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 class OCRWidget(QWidget):
     """Full OCR panel.  `text_ready` emits extracted text (for chat integration)."""
     text_ready = pyqtSignal(str)
@@ -381,10 +392,9 @@ class OCRWidget(QWidget):
         self._worker     = None
         self._overlay    = None
         self._build_ui()
-        # c10.dll was pre-loaded at module import above — safe to call synchronously.
         self._detect_gpu()
 
-    # ── GPU probe ────────────────────────────────────────────────────────────
+    # ── GPU probe ───────────────────────────────────────────────────────────
     def _detect_gpu(self):
         try:
             import torch
@@ -409,7 +419,6 @@ class OCRWidget(QWidget):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
 
-        # Header
         hdr = QHBoxLayout()
         title = QLabel("🔍  OCR — Extract Text from Images")
         title.setStyleSheet(f"color:{D['text']};font-size:14px;font-weight:700;")
@@ -425,7 +434,6 @@ class OCRWidget(QWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        # Drop card
         drop_card = QFrame()
         drop_card.setObjectName("Card")
         dc = QVBoxLayout(drop_card)
@@ -453,7 +461,6 @@ class OCRWidget(QWidget):
         dc.addLayout(btns)
         root.addWidget(drop_card)
 
-        # Language + GPU row
         self.lang_bar = _LangBar()
         root.addWidget(self.lang_bar)
 
@@ -465,7 +472,6 @@ class OCRWidget(QWidget):
         gpu_row.addStretch()
         root.addLayout(gpu_row)
 
-        # Run button
         self._run_btn = QPushButton("⚡  Extract Text")
         self._run_btn.setObjectName("Primary")
         self._run_btn.setFixedHeight(38)
@@ -482,7 +488,6 @@ class OCRWidget(QWidget):
         self._status.setStyleSheet(f"color:{D['muted']};font-size:11px;")
         root.addWidget(self._status)
 
-        # Result card
         result_card = QFrame()
         result_card.setObjectName("Card")
         rc = QVBoxLayout(result_card)
@@ -519,7 +524,7 @@ class OCRWidget(QWidget):
         rc.addWidget(self._result_box)
         root.addWidget(result_card)
 
-    # ── File handling ─────────────────────────────────────────────────────────
+    # ── File handling
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image", "",
@@ -541,7 +546,7 @@ class OCRWidget(QWidget):
         self._result_box.clear()
         self._status.setText("No image loaded.")
 
-    # ── Snip ─────────────────────────────────────────────────────────────────
+    # ── Snip
     def _start_snip(self):
         top = self.window()
         top.hide()
@@ -558,9 +563,7 @@ class OCRWidget(QWidget):
         self._snip_image = pil_img
         self._image_path = None
         self.drop_zone.show_pil(pil_img)
-        self._status.setText(
-            f"Snip: {pil_img.width}×{pil_img.height}px — running OCR…"
-        )
+        self._status.setText(f"Snip: {pil_img.width}×{pil_img.height}px — running OCR…")
         self._result_box.clear()
         self._run()
 
@@ -568,7 +571,7 @@ class OCRWidget(QWidget):
         self.window().show()
         self._status.setText("Snip cancelled.")
 
-    # ── OCR ───────────────────────────────────────────────────────────────────
+    # ── OCR
     def _run(self):
         source = self._snip_image if self._snip_image else self._image_path
         if source is None:
@@ -601,13 +604,12 @@ class OCRWidget(QWidget):
         self._progress.hide()
         self._run_btn.setEnabled(True)
 
-    # ── Actions ─────────────────────────────────────────────────────────────
+    # ── Actions
     def _copy(self):
         txt = self._result_box.toPlainText()
         if txt:
             QApplication.clipboard().setText(txt)
             self._copy_btn.setText("✅ Copied!")
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(1500, lambda: self._copy_btn.setText("📋 Copy"))
 
     def _insert(self):
@@ -616,7 +618,7 @@ class OCRWidget(QWidget):
             self.text_ready.emit(txt)
             self._status.setText("✓ Text sent to Chat input.")
 
-    # ── Public API for chat_panel inline snip ────────────────────────────────
+    # ── Public API for chat_panel inline snip
     def start_snip_for_chat(self, callback):
         top = self.window()
         top.hide()
