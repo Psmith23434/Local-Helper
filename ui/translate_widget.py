@@ -34,6 +34,8 @@ D = {
     "teal":     "#2dd4bf",
     "teal_bg":  "#0d2420",
     "teal_bd":  "#1a4a40",
+    "orange":   "#fb923c",
+    "orange_bg":"#1e0f00",
 }
 
 TRANS_QSS = f"""
@@ -99,12 +101,27 @@ QTextEdit {{
 }}
 """
 
+# Backend badge styles (set via setStyleSheet on _backend_lbl)
+_BADGE_LIBRE = (
+    f"background:{D['teal_bg']};color:{D['teal']};border:1px solid {D['teal_bd']};"
+    "border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;"
+)
+_BADGE_GOOGLE = (
+    f"background:{D['orange_bg']};color:{D['orange']};border:1px solid #4a2a00;"
+    "border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;"
+)
+_BADGE_ERROR = (
+    f"background:#1a0000;color:{D['red']};border:1px solid #4a0000;"
+    "border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;"
+)
+
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
 class _TranslateWorker(QThread):
-    finished = pyqtSignal(str)
-    error    = pyqtSignal(str)
+    # emits (translated_text, backend_name)
+    finished = pyqtSignal(str, str)
+    error    = pyqtSignal(str, str)
 
     def __init__(self, text: str, source: str, target: str):
         super().__init__()
@@ -114,13 +131,13 @@ class _TranslateWorker(QThread):
 
     def run(self):
         try:
-            result = TR.translate(self.text, self.source, self.target)
+            result, backend = TR.translate(self.text, self.source, self.target)
             if result.startswith("[Error]"):
-                self.error.emit(result)
+                self.error.emit(result, backend)
             else:
-                self.finished.emit(result)
+                self.finished.emit(result, backend)
         except Exception as e:
-            self.error.emit(f"[Error] {e}")
+            self.error.emit(f"[Error] {e}", "error")
 
 
 # ── Main widget ───────────────────────────────────────────────────────────────
@@ -137,6 +154,8 @@ class TranslateWidget(QWidget):
         self.setStyleSheet(TRANS_QSS)
         self._build_ui()
         self._load_defaults()
+        # Check LibreTranslate availability once on startup (non-blocking)
+        QTimer.singleShot(500, self._probe_backend)
 
     # ── Defaults from config ──────────────────────────────────────────────────
     def _load_defaults(self):
@@ -145,6 +164,15 @@ class TranslateWidget(QWidget):
         idx  = self.target_combo.findText(name)
         if idx >= 0:
             self.target_combo.setCurrentIndex(idx)
+
+    # ── Probe LibreTranslate on startup ───────────────────────────────────────
+    def _probe_backend(self):
+        """Check once whether LibreTranslate is reachable and update the badge."""
+        available = TR.libretranslate_available()
+        if available:
+            self._set_backend_badge(TR.BACKEND_LIBRETRANSLATE, idle=True)
+        else:
+            self._set_backend_badge(TR.BACKEND_GOOGLE, idle=True)
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -223,13 +251,21 @@ class TranslateWidget(QWidget):
         self.source_box.setMaximumHeight(160)
         card_lay.addWidget(self.source_box)
 
-        # Translate button
+        # Translate button row + backend badge
         action_row = QHBoxLayout()
         self.translate_btn = QPushButton("🌐  Translate")
         self.translate_btn.setObjectName("TransBtn")
         self.translate_btn.setFixedHeight(34)
         self.translate_btn.clicked.connect(self._run_translate)
         action_row.addWidget(self.translate_btn)
+
+        # Backend badge label — shows which engine was used
+        self._backend_lbl = QLabel("checking…")
+        self._backend_lbl.setStyleSheet(
+            f"color:{D['muted']};font-size:10px;padding:1px 7px;"
+        )
+        action_row.addWidget(self._backend_lbl)
+
         action_row.addStretch()
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color:{D['muted']};font-size:11px;")
@@ -264,6 +300,24 @@ class TranslateWidget(QWidget):
 
         root.addWidget(self._card)
         self._card.setVisible(not self._collapsed)
+
+    # ── Backend badge helper ──────────────────────────────────────────────────
+    def _set_backend_badge(self, backend: str, idle: bool = False):
+        """Update the backend indicator label.
+
+        idle=True  → shown on startup probe (e.g. '● LibreTranslate  ready')
+        idle=False → shown after a translation completed
+        """
+        if backend == TR.BACKEND_LIBRETRANSLATE:
+            label = "● LibreTranslate" + ("  ready" if idle else "  used")
+            self._backend_lbl.setStyleSheet(_BADGE_LIBRE)
+        elif backend == TR.BACKEND_GOOGLE:
+            label = "● Google (fallback)" + ("  — LibreTranslate offline" if idle else "  used")
+            self._backend_lbl.setStyleSheet(_BADGE_GOOGLE)
+        else:
+            label = "● Error"
+            self._backend_lbl.setStyleSheet(_BADGE_ERROR)
+        self._backend_lbl.setText(label)
 
     # ── Toggle ────────────────────────────────────────────────────────────────
     def _toggle(self, checked: bool):
@@ -302,20 +356,24 @@ class TranslateWidget(QWidget):
         self.translate_btn.setEnabled(False)
         self.result_box.clear()
         self._status_lbl.setText("Translating…")
+        self._backend_lbl.setText("…")
+        self._backend_lbl.setStyleSheet(f"color:{D['muted']};font-size:10px;padding:1px 7px;")
 
         self._worker = _TranslateWorker(text, src, tgt)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
-    def _on_done(self, text: str):
+    def _on_done(self, text: str, backend: str):
         self.result_box.setPlainText(text)
         self._status_lbl.setText("✓ Done")
+        self._set_backend_badge(backend, idle=False)
         self.translate_btn.setEnabled(True)
 
-    def _on_error(self, msg: str):
+    def _on_error(self, msg: str, backend: str):
         self.result_box.setPlainText(msg)
         self._status_lbl.setText("✗ Error")
+        self._set_backend_badge("error", idle=False)
         self.translate_btn.setEnabled(True)
 
     def _copy(self):

@@ -2,7 +2,8 @@
 
 Usage:
     from translator import translate
-    text = translate("Hallo Welt", source="de", target="en")
+    text, backend = translate("Hallo Welt", source="de", target="en")
+    # backend is "libretranslate" or "google"
 
 Backend priority:
     1. LibreTranslate at LIBRETRANSLATE_URL (self-hosted, fully offline/private)
@@ -101,28 +102,43 @@ def name_to_code(name: str) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def translate(text: str, source: str = "auto", target: str = "en") -> str:
+BACKEND_LIBRETRANSLATE = "libretranslate"
+BACKEND_GOOGLE         = "google"
+
+
+def translate(text: str, source: str = "auto", target: str = "en") -> tuple[str, str]:
     """Translate *text* from *source* language to *target* language.
 
-    Tries LibreTranslate first; falls back to deep-translator on any error.
-    Returns the translated string, or an error message starting with '[Error]'.
+    Returns a tuple: (translated_text, backend_name)
+    backend_name is BACKEND_LIBRETRANSLATE or BACKEND_GOOGLE.
+    On error, translated_text starts with '[Error]' and backend_name is 'error'.
     """
     if not text or not text.strip():
-        return ""
+        return "", BACKEND_LIBRETRANSLATE
 
     # 1 — LibreTranslate
     try:
         result = _libretranslate(text, source, target)
         if result is not None:
-            return result
+            return result, BACKEND_LIBRETRANSLATE
     except Exception as e:
         print(f"[Translator] LibreTranslate failed: {e} — trying fallback")
 
     # 2 — deep-translator fallback
     try:
-        return _deep_translator(text, source, target)
+        return _deep_translator(text, source, target), BACKEND_GOOGLE
     except Exception as e:
-        return f"[Error] Translation failed: {e}"
+        return f"[Error] Translation failed: {e}", "error"
+
+
+def libretranslate_available() -> bool:
+    """Ping the LibreTranslate server and return True if it responds."""
+    url = get_libretranslate_url() + "/languages"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def get_libretranslate_url() -> str:
@@ -177,6 +193,5 @@ def _deep_translator(text: str, source: str, target: str) -> str:
         return "[Error] deep-translator not installed. Run: pip install deep-translator"
 
     src = "auto" if source == "auto" else source
-    # deep-translator uses 'auto' for auto-detect
     translator = GoogleTranslator(source=src, target=target)
     return translator.translate(text)
